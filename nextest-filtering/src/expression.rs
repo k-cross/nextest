@@ -401,11 +401,8 @@ impl KnownGroups {
 /// Inputs to filterset parsing.
 #[derive(Debug)]
 pub struct ParseContext<'g> {
-    /// The package graph, if one is available.
-    ///
-    /// Orchestrators for build systems other than Cargo have no package graph.
-    /// Predicates that need one report an error at compile time; the rest work
-    /// as usual.
+    /// The package graph, if one is available. Orchestrators for build systems
+    /// other than Cargo have no package graph.
     graph: Option<&'g PackageGraph>,
 
     /// Cached data computed on first access.
@@ -423,11 +420,6 @@ impl<'g> ParseContext<'g> {
     }
 
     /// Creates a new `ParseContext` with no package graph.
-    ///
-    /// `package()`, `deps()`, and `rdeps()` fail to compile against this
-    /// context, since they have no package metadata to resolve against. Every
-    /// other predicate behaves as it does with a graph, except that suggestions
-    /// for misspelled binary names and IDs are unavailable.
     #[inline]
     pub fn without_graph() -> Self {
         Self {
@@ -453,10 +445,6 @@ impl<'g> ParseContext<'g> {
 #[derive(Debug)]
 pub(crate) struct ParseContextCache<'g> {
     /// Whether a package graph backed this cache.
-    ///
-    /// Without one, the collections below are empty because nothing is known,
-    /// not because nothing matched -- so the "didn't match anything"
-    /// diagnostics must be suppressed.
     pub(crate) has_graph: bool,
     pub(crate) workspace_packages: Vec<PackageMetadata<'g>>,
     // Ordinarily we'd store RustBinaryId here, but that wouldn't allow looking
@@ -490,11 +478,7 @@ impl<'g> ParseContextCache<'g> {
         }
     }
 
-    /// Returns an empty cache, for use when no package graph is available.
-    ///
-    /// `binary()` and `binary_id()` still compile against this; they simply
-    /// have nothing to check the name against, so no "didn't match anything"
-    /// diagnostic is produced.
+    // For when no package graph is available.
     fn empty() -> Self {
         Self {
             has_graph: false,
