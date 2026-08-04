@@ -26,45 +26,29 @@ use semver::Version;
 /// See the [module-level documentation](self) for why this exists.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PackageInfo {
-    /// A unique identifier for the package.
-    ///
-    /// For Cargo this is the package ID from `cargo metadata`. It is used to
+    /// This is the package ID from `cargo metadata`. It is used to
     /// key build script output directories and to evaluate `package()`
     /// filtersets, and is otherwise opaque to nextest.
     pub id: PackageId,
-
     /// The name of the package (`CARGO_PKG_NAME`).
     pub name: String,
-
     /// The version of the package (`CARGO_PKG_VERSION` and friends).
     pub version: Version,
-
     /// The authors of the package (`CARGO_PKG_AUTHORS`).
     pub authors: Vec<String>,
-
     /// The description of the package (`CARGO_PKG_DESCRIPTION`).
     pub description: Option<String>,
-
     /// The homepage of the package (`CARGO_PKG_HOMEPAGE`).
     pub homepage: Option<String>,
-
     /// The license of the package (`CARGO_PKG_LICENSE`).
     pub license: Option<String>,
-
     /// The path to the package's license file (`CARGO_PKG_LICENSE_FILE`).
     pub license_file: Option<Utf8PathBuf>,
-
     /// The repository of the package (`CARGO_PKG_REPOSITORY`).
     pub repository: Option<String>,
-
     /// The minimum supported Rust version (`CARGO_PKG_RUST_VERSION`).
     pub minimum_rust_version: Option<Version>,
-
     /// The path to the package's manifest.
-    ///
-    /// Tests are run in the directory containing this file. For non-Cargo build
-    /// systems this is whichever file plays the role of the manifest, e.g. a
-    /// `BUCK` file.
     pub manifest_path: Utf8PathBuf,
 }
 
@@ -97,8 +81,6 @@ impl PackageInfo {
             .collect()
     }
 
-    /// Returns the directory tests from this package are run in.
-    ///
     /// This is the directory containing the manifest.
     pub fn cwd(&self) -> &Utf8Path {
         self.manifest_path
@@ -173,7 +155,7 @@ mod tests {
     }
 
     /// `from_binary_list` looks packages up by ID, so the map must cover every
-    /// package a test binary could belong to -- not just workspace members.
+    /// package a test binary could belong to, not just workspace members.
     #[test]
     fn map_from_graph_covers_every_package() {
         let map = PackageInfo::map_from_graph(&PACKAGE_GRAPH_FIXTURE);

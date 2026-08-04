@@ -39,12 +39,7 @@ pub struct RustTestBinary {
     /// Platform for which this binary was built.
     /// (Proc-macro tests are built for the host.)
     pub build_platform: BuildPlatform,
-
-    /// Extra details for invoking this binary.
-    ///
-    /// Empty for Cargo-built binaries, which are invoked directly. Not part of
-    /// [`RustTestBinarySummary`], so it does not survive a round trip through
-    /// `--binaries-metadata` or an archive.
+    /// Invoked this binary using cargo or other system.
     pub invocation: TestBinaryInvocation,
 }
 
