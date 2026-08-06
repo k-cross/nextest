@@ -17,7 +17,7 @@ use crate::{
     indenter::indented,
     list::{
         BinaryList, ListProgressEvent, ListProgressOptions, ListProgressReporter, OutputFormat,
-        RustBuildMeta, Styles, TestListState,
+        PackageInfo, RustBuildMeta, Styles, TestBinaryInvocation, TestListState,
     },
     partition::{Partitioner, PartitionerBuilder, PartitionerScope},
     reuse_build::PathMapper,
@@ -31,10 +31,7 @@ use crate::{
 use camino::{Utf8Path, Utf8PathBuf};
 use debug_ignore::DebugIgnore;
 use futures::prelude::*;
-use guppy::{
-    PackageId,
-    graph::{PackageGraph, PackageMetadata},
-};
+use guppy::PackageId;
 use iddqd::{IdOrdItem, IdOrdMap, id_upcast};
 use nextest_filtering::{BinaryQuery, EvalContext, GroupLookup, TestQuery};
 use nextest_metadata::{
@@ -70,7 +67,7 @@ pub struct RustTestArtifact<'g> {
 
     /// Metadata for the package this artifact is a part of. This is used to set the correct
     /// environment variables.
-    pub package: PackageMetadata<'g>,
+    pub package: &'g PackageInfo,
 
     /// The path to the binary artifact.
     pub binary_path: Utf8PathBuf,
@@ -89,12 +86,19 @@ pub struct RustTestArtifact<'g> {
 
     /// The platform for which this test artifact was built.
     pub build_platform: BuildPlatform,
+
+    /// Extra details for invoking this binary.
+    pub invocation: TestBinaryInvocation,
 }
 
 impl<'g> RustTestArtifact<'g> {
     /// Constructs a list of test binaries from the list of built binaries.
+    ///
+    /// `packages` must contain an entry for every package ID referenced by
+    /// `binary_list`. Cargo-based callers build it from a `PackageGraph` with
+    /// [`PackageInfo::map_from_graph`].
     pub fn from_binary_list(
-        graph: &'g PackageGraph,
+        packages: &'g IdOrdMap<PackageInfo>,
         binary_list: Arc<BinaryList>,
         rust_build_meta: &RustBuildMeta<TestListState>,
         path_mapper: &PathMapper,
@@ -107,23 +111,22 @@ impl<'g> RustTestArtifact<'g> {
                 continue;
             }
 
-            // Look up the executable by package ID.
+            // Look up the package by package ID.
             let package_id = PackageId::new(binary.package_id.clone());
-            let package = graph
-                .metadata(&package_id)
-                .map_err(FromMessagesError::PackageGraph)?;
+            let package = packages.get(&package_id).ok_or_else(|| {
+                FromMessagesError::PackageInfoNotFound {
+                    package_id: binary.package_id.clone(),
+                    binary_id: binary.id.clone(),
+                }
+            })?;
 
-            // Tests are run in the directory containing Cargo.toml
-            let cwd = package
-                .manifest_path()
-                .parent()
-                .unwrap_or_else(|| {
-                    panic!(
-                        "manifest path {} doesn't have a parent",
-                        package.manifest_path()
-                    )
-                })
-                .to_path_buf();
+            // Tests are run wherever the build system said, defaulting to the
+            // directory containing the manifest.
+            let cwd = binary
+                .invocation
+                .cwd
+                .clone()
+                .unwrap_or_else(|| package.cwd().to_path_buf());
 
             // Test binaries live under the build directory (never uplifted).
             let binary_path = path_mapper.map_build_path(binary.path.clone());
@@ -161,6 +164,7 @@ impl<'g> RustTestArtifact<'g> {
                 cwd,
                 non_test_binaries,
                 build_platform: binary.build_platform,
+                invocation: binary.invocation.clone(),
             })
         }
 
@@ -170,7 +174,7 @@ impl<'g> RustTestArtifact<'g> {
     /// Returns a [`BinaryQuery`] corresponding to this test artifact.
     pub fn to_binary_query(&self) -> BinaryQuery<'_> {
         BinaryQuery {
-            package_id: self.package.id(),
+            package_id: &self.package.id,
             binary_id: &self.binary_id,
             kind: &self.kind,
             binary_name: &self.binary_name,
@@ -191,6 +195,7 @@ impl<'g> RustTestArtifact<'g> {
             non_test_binaries,
             cwd,
             build_platform,
+            invocation,
         } = self;
 
         RustTestSuite {
@@ -202,6 +207,7 @@ impl<'g> RustTestArtifact<'g> {
             non_test_binaries,
             cwd,
             build_platform,
+            invocation,
             status,
         }
     }
@@ -466,16 +472,14 @@ impl<'g> TestList<'g> {
     /// executing test binaries. The reconstructed TestList provides the
     /// data needed for display through the reporter infrastructure.
     pub fn from_summary(
-        graph: &'g PackageGraph,
+        packages: &'g IdOrdMap<PackageInfo>,
+        workspace_root: Utf8PathBuf,
         summary: &TestListSummary,
         mode: NextestRunMode,
     ) -> Result<Self, TestListFromSummaryError> {
         // Build RustBuildMeta from summary.
         let rust_build_meta = RustBuildMeta::from_summary(summary.rust_build_meta.clone())
             .map_err(TestListFromSummaryError::RustBuildMeta)?;
-
-        // Get the workspace root from the graph.
-        let workspace_root = graph.workspace().root().to_path_buf();
 
         // Construct an empty environment map - we don't need it for replay.
         let env = EnvironmentMap::empty();
@@ -488,9 +492,9 @@ impl<'g> TestList<'g> {
         let mut test_count = 0;
 
         for (binary_id, suite_summary) in &summary.rust_suites {
-            // Look up the package in the graph by package_id.
+            // Look up the package by package_id.
             let package_id = PackageId::new(suite_summary.binary.package_id.clone());
-            let package = graph.metadata(&package_id).map_err(|_| {
+            let package = packages.get(&package_id).ok_or_else(|| {
                 TestListFromSummaryError::PackageNotFound {
                     name: suite_summary.package_name.clone(),
                     package_id: suite_summary.binary.package_id.clone(),
@@ -534,6 +538,8 @@ impl<'g> TestList<'g> {
                 non_test_binaries: BTreeSet::new(), // Not stored in summary.
                 cwd: suite_summary.cwd.clone(),
                 build_platform: suite_summary.binary.build_platform,
+                // Not carried in the summary format; see `RustTestBinary`.
+                invocation: TestBinaryInvocation::empty(),
                 status,
             };
 
@@ -658,10 +664,10 @@ impl<'g> TestList<'g> {
             .map(|test_suite| {
                 let (status, test_cases) = test_suite.status.to_summary();
                 let testsuite = RustTestSuiteSummary {
-                    package_name: test_suite.package.name().to_owned(),
+                    package_name: test_suite.package.name.clone(),
                     binary: RustTestBinarySummary {
                         binary_name: test_suite.binary_name.clone(),
-                        package_id: test_suite.package.id().repr().to_owned(),
+                        package_id: test_suite.package.id.repr().to_owned(),
                         kind: test_suite.kind.clone(),
                         binary_path: test_suite.binary_path.clone(),
                         binary_id: test_suite.binary_id.clone(),
@@ -1311,7 +1317,7 @@ pub struct RustTestSuite<'g> {
     pub binary_path: Utf8PathBuf,
 
     /// Package metadata.
-    pub package: PackageMetadata<'g>,
+    pub package: &'g PackageInfo,
 
     /// The unique binary name defined in `Cargo.toml` or inferred by the filename.
     pub binary_name: String,
@@ -1329,6 +1335,9 @@ pub struct RustTestSuite<'g> {
     /// Non-test binaries corresponding to this test suite (name, path).
     pub non_test_binaries: BTreeSet<(String, Utf8PathBuf)>,
 
+    /// Extra details for invoking this binary.
+    pub invocation: TestBinaryInvocation,
+
     /// Test suite status and test case names.
     pub status: RustTestSuiteStatus,
 }
@@ -1337,7 +1346,7 @@ impl<'g> RustTestSuite<'g> {
     /// Returns a binary query for this suite.
     pub fn to_binary_query(&self) -> BinaryQuery<'_> {
         BinaryQuery {
-            package_id: self.package.id(),
+            package_id: &self.package.id,
             binary_id: &self.binary_id,
             kind: &self.kind,
             binary_name: &self.binary_name,
@@ -1399,6 +1408,7 @@ impl RustTestArtifact<'_> {
             &lctx.rust_build_meta.target_directory,
         );
         cli.push(self.binary_path.as_str());
+        cli.extend(self.invocation.leading_args.iter().map(String::as_str));
 
         cli.extend(["--list", "--format", "terse"]);
         if ignored {
@@ -1413,8 +1423,9 @@ impl RustTestArtifact<'_> {
                 .into_owned(),
             &cli.args,
             cli.env,
+            &self.invocation.env,
             &self.cwd,
-            &self.package,
+            self.package,
             &self.non_test_binaries,
             &Interceptor::None, // Interceptors are not used during the test list phase.
         );
@@ -1621,7 +1632,7 @@ impl<'a> TestInstance<'a> {
     pub fn to_test_query(&self) -> TestQuery<'a> {
         TestQuery {
             binary_query: BinaryQuery {
-                package_id: self.suite_info.package.id(),
+                package_id: &self.suite_info.package.id,
                 binary_id: &self.suite_info.binary_id,
                 kind: &self.suite_info.kind,
                 binary_name: &self.suite_info.binary_name,
@@ -1640,7 +1651,6 @@ impl<'a> TestInstance<'a> {
         extra_args: &[String],
         interceptor: &Interceptor,
     ) -> TestCommand {
-        // TODO: non-rust tests
         let cli = self.compute_cli(ctx, test_list, wrapper_script, extra_args);
 
         let lctx = LocalExecuteContext {
@@ -1662,8 +1672,9 @@ impl<'a> TestInstance<'a> {
                 .into_owned(),
             &cli.args,
             cli.env,
+            &self.suite_info.invocation.env,
             &self.suite_info.cwd,
-            &self.suite_info.package,
+            self.suite_info.package,
             &self.suite_info.non_test_binaries,
             interceptor,
         )
@@ -1699,6 +1710,13 @@ impl<'a> TestInstance<'a> {
             &test_list.rust_build_meta().target_directory,
         );
         cli.push(self.suite_info.binary_path.as_str());
+        cli.extend(
+            self.suite_info
+                .invocation
+                .leading_args
+                .iter()
+                .map(String::as_str),
+        );
 
         cli.extend(["--exact", self.name.as_str(), "--nocapture"]);
         if self.test_info.ignored {
@@ -1965,8 +1983,10 @@ mod tests {
         cargo_config::{TargetDefinitionLocation, TargetTriple, TargetTripleSource},
         config::scripts::{ScriptCommand, ScriptCommandEnvMap, ScriptCommandRelativeTo},
         list::{
-            SerializableFormat,
-            test_helpers::{PACKAGE_GRAPH_FIXTURE, package_metadata},
+            RustTestBinary, SerializableFormat,
+            test_helpers::{
+                PACKAGE_GRAPH_FIXTURE, PACKAGE_METADATA_ID, package_info, simple_build_meta,
+            },
         },
         platform::{BuildPlatforms, HostPlatform, PlatformLibdir, TargetPlatform},
         target_runner::PlatformRunnerSource,
@@ -2025,12 +2045,13 @@ mod tests {
         let test_binary = RustTestArtifact {
             binary_path: "/fake/binary".into(),
             cwd: fake_cwd.clone(),
-            package: package_metadata(),
+            package: package_info(),
             binary_name: fake_binary_name.clone(),
             binary_id: fake_binary_id.clone(),
             kind: RustTestBinaryKind::LIB,
             non_test_binaries: BTreeSet::new(),
             build_platform: BuildPlatform::Target,
+            invocation: TestBinaryInvocation::empty(),
         };
 
         let skipped_binary_name = "skipped-binary".to_owned();
@@ -2038,12 +2059,13 @@ mod tests {
         let skipped_binary = RustTestArtifact {
             binary_path: "/fake/skipped-binary".into(),
             cwd: fake_cwd.clone(),
-            package: package_metadata(),
+            package: package_info(),
             binary_name: skipped_binary_name.clone(),
             binary_id: skipped_binary_id.clone(),
             kind: RustTestBinaryKind::PROC_MACRO,
             non_test_binaries: BTreeSet::new(),
             build_platform: BuildPlatform::Host,
+            invocation: TestBinaryInvocation::empty(),
         };
 
         let fake_triple = TargetTriple {
@@ -2150,12 +2172,13 @@ mod tests {
                     },
                     cwd: fake_cwd.clone(),
                     build_platform: BuildPlatform::Target,
-                    package: package_metadata(),
+                    package: package_info(),
                     binary_name: fake_binary_name,
                     binary_id: fake_binary_id,
                     binary_path: "/fake/binary".into(),
                     kind: RustTestBinaryKind::LIB,
                     non_test_binaries: BTreeSet::new(),
+                    invocation: TestBinaryInvocation::empty(),
                 },
                 RustTestSuite {
                     status: RustTestSuiteStatus::Skipped {
@@ -2163,12 +2186,13 @@ mod tests {
                     },
                     cwd: fake_cwd,
                     build_platform: BuildPlatform::Host,
-                    package: package_metadata(),
+                    package: package_info(),
                     binary_name: skipped_binary_name,
                     binary_id: skipped_binary_id,
                     binary_path: "/fake/skipped-binary".into(),
                     kind: RustTestBinaryKind::PROC_MACRO,
                     non_test_binaries: BTreeSet::new(),
+                    invocation: TestBinaryInvocation::empty(),
                 },
             }
         );
@@ -2394,12 +2418,13 @@ mod tests {
         let test_binary = RustTestArtifact {
             binary_path: "/fake/binary".into(),
             cwd: fake_cwd.clone(),
-            package: package_metadata(),
+            package: package_info(),
             binary_name: "overlap-binary".to_owned(),
             binary_id: fake_binary_id.clone(),
             kind: RustTestBinaryKind::LIB,
             non_test_binaries: BTreeSet::new(),
             build_platform: BuildPlatform::Target,
+            invocation: TestBinaryInvocation::empty(),
         };
 
         let fake_host_libdir = "/home/fake/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib";
@@ -2446,6 +2471,194 @@ mod tests {
             }
             other => panic!("expected Listed status, got {other:?}"),
         }
+    }
+
+    /// The libtest arguments must stay last, so a suite's leading args go
+    /// between the binary path and them. Wrappers stay in front of everything.
+    #[test]
+    fn invocation_leading_args_precede_libtest_args() {
+        let suite = RustTestSuite {
+            binary_id: RustBinaryId::new("fake-package::fake-binary"),
+            binary_path: "/fake/binary".into(),
+            package: package_info(),
+            binary_name: "fake-binary".to_owned(),
+            kind: RustTestBinaryKind::TEST,
+            cwd: "/fake/cwd".into(),
+            build_platform: BuildPlatform::Target,
+            non_test_binaries: BTreeSet::new(),
+            invocation: TestBinaryInvocation {
+                leading_args: vec!["--buck-arg".to_owned(), "value".to_owned()],
+                env: BTreeMap::new(),
+                cwd: None,
+            },
+            status: RustTestSuiteStatus::Listed {
+                test_cases: DebugIgnore(IdOrdMap::new()),
+            },
+        };
+        let test_info = RustTestCaseSummary {
+            kind: Some(RustTestKind::TEST),
+            ignored: false,
+            filter_match: FilterMatch::Matches,
+        };
+        let name = TestCaseName::new("tests::foo");
+        let instance = TestInstance {
+            name: &name,
+            suite_info: &suite,
+            test_info: &test_info,
+        };
+
+        let test_list = TestList::empty();
+        let version_env_vars = VersionEnvVars {
+            current_version: semver::Version::new(0, 0, 0),
+            required_version: None,
+            recommended_version: None,
+        };
+        let ctx = TestExecuteContext {
+            run_id: ReportUuid::new_v4(),
+            version_env_vars: &version_env_vars,
+            profile_name: "default",
+            double_spawn: &DoubleSpawnInfo::disabled(),
+            target_runner: &TargetRunner::empty(),
+        };
+
+        assert_eq!(
+            instance.command_line(&ctx, &test_list, None, &[]),
+            vec![
+                "/fake/binary",
+                "--buck-arg",
+                "value",
+                "--exact",
+                "tests::foo",
+                "--nocapture",
+            ],
+            "leading args come after the binary and before the libtest args"
+        );
+
+        // An extra arg from the profile still goes last.
+        assert_eq!(
+            instance.command_line(&ctx, &test_list, None, &["--extra".to_owned()]),
+            vec![
+                "/fake/binary",
+                "--buck-arg",
+                "value",
+                "--exact",
+                "tests::foo",
+                "--nocapture",
+                "--extra",
+            ],
+            "run-extra-args stay last"
+        );
+    }
+
+    /// Cargo suites have an empty invocation, which must not alter the command.
+    #[test]
+    fn empty_invocation_leaves_command_unchanged() {
+        let suite = RustTestSuite {
+            binary_id: RustBinaryId::new("fake-package::fake-binary"),
+            binary_path: "/fake/binary".into(),
+            package: package_info(),
+            binary_name: "fake-binary".to_owned(),
+            kind: RustTestBinaryKind::TEST,
+            cwd: "/fake/cwd".into(),
+            build_platform: BuildPlatform::Target,
+            non_test_binaries: BTreeSet::new(),
+            invocation: TestBinaryInvocation::empty(),
+            status: RustTestSuiteStatus::Listed {
+                test_cases: DebugIgnore(IdOrdMap::new()),
+            },
+        };
+        let test_info = RustTestCaseSummary {
+            kind: Some(RustTestKind::TEST),
+            ignored: true,
+            filter_match: FilterMatch::Matches,
+        };
+        let name = TestCaseName::new("tests::foo");
+        let instance = TestInstance {
+            name: &name,
+            suite_info: &suite,
+            test_info: &test_info,
+        };
+
+        let test_list = TestList::empty();
+        let version_env_vars = VersionEnvVars {
+            current_version: semver::Version::new(0, 0, 0),
+            required_version: None,
+            recommended_version: None,
+        };
+        let ctx = TestExecuteContext {
+            run_id: ReportUuid::new_v4(),
+            version_env_vars: &version_env_vars,
+            profile_name: "default",
+            double_spawn: &DoubleSpawnInfo::disabled(),
+            target_runner: &TargetRunner::empty(),
+        };
+
+        assert_eq!(
+            instance.command_line(&ctx, &test_list, None, &[]),
+            vec![
+                "/fake/binary",
+                "--exact",
+                "tests::foo",
+                "--nocapture",
+                "--ignored",
+            ],
+            "an empty invocation adds nothing"
+        );
+    }
+
+    /// A build system that names the working directory wins over the manifest
+    /// directory; one that does not still gets the manifest directory.
+    #[test]
+    fn invocation_cwd_overrides_the_manifest_directory() {
+        fn binary(id: &str, cwd: Option<&str>) -> RustTestBinary {
+            RustTestBinary {
+                id: RustBinaryId::new(id),
+                path: "/fake/binary".into(),
+                package_id: PACKAGE_METADATA_ID.to_owned(),
+                kind: RustTestBinaryKind::TEST,
+                name: "fake-binary".to_owned(),
+                build_platform: BuildPlatform::Target,
+                invocation: TestBinaryInvocation {
+                    cwd: cwd.map(Utf8PathBuf::from),
+                    ..TestBinaryInvocation::empty()
+                },
+            }
+        }
+
+        let binary_list = BinaryList {
+            rust_build_meta: RustBuildMeta::new(
+                "/fake",
+                "/fake",
+                BuildPlatforms {
+                    host: HostPlatform {
+                        platform: TargetTriple::x86_64_unknown_linux_gnu().platform,
+                        libdir: PlatformLibdir::Available("/fake/libdir".into()),
+                    },
+                    target: None,
+                },
+            ),
+            rust_binaries: vec![
+                binary("fake-package::explicit", Some("/explicit/cwd")),
+                binary("fake-package::derived", None),
+            ],
+        };
+        let packages = id_ord_map! { package_info().clone() };
+
+        let artifacts = RustTestArtifact::from_binary_list(
+            &packages,
+            Arc::new(binary_list),
+            &simple_build_meta(),
+            &PathMapper::noop(),
+            None,
+        )
+        .expect("every binary's package is present");
+
+        assert_eq!(artifacts[0].cwd, "/explicit/cwd");
+        assert_eq!(
+            artifacts[1].cwd,
+            package_info().cwd(),
+            "no explicit cwd falls back to the manifest directory"
+        );
     }
 
     #[test]
@@ -2973,12 +3186,13 @@ mod tests {
                 artifact: RustTestArtifact {
                     binary_path: "/fake/binary".into(),
                     cwd: "/fake/cwd".into(),
-                    package: package_metadata(),
+                    package: package_info(),
                     binary_name: "fake-binary".to_owned(),
                     binary_id: fake_binary_id.clone(),
                     kind: RustTestBinaryKind::LIB,
                     non_test_binaries: BTreeSet::new(),
                     build_platform: BuildPlatform::Target,
+                    invocation: TestBinaryInvocation::empty(),
                 },
                 test_cases: vec![
                     ParsedTestCase {

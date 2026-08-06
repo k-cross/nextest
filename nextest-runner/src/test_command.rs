@@ -6,16 +6,15 @@ use crate::{
     config::scripts::ScriptCommandEnvMap,
     double_spawn::{DoubleSpawnContext, DoubleSpawnInfo},
     helpers::dylib_path_envvar,
-    list::{RustBuildMeta, TestListState},
+    list::{PackageInfo, RustBuildMeta, TestListState},
     runner::{Interceptor, VersionEnvVars},
     test_output::CaptureStrategy,
 };
 use camino::{Utf8Path, Utf8PathBuf};
-use guppy::graph::PackageMetadata;
 use quick_junit::ReportUuid;
 use std::{
     borrow::Cow,
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     ffi::{OsStr, OsString},
     fs::File,
     io::{BufRead, BufReader},
@@ -66,8 +65,9 @@ impl TestCommand {
         program: String,
         args: &[Cow<'_, str>],
         env: Option<&ScriptCommandEnvMap>,
+        suite_env: &BTreeMap<String, String>,
         cwd: &Utf8Path,
-        package: &PackageMetadata<'_>,
+        package: &PackageInfo,
         non_test_binaries: &BTreeSet<(String, Utf8PathBuf)>,
         interceptor: &Interceptor,
     ) -> Self {
@@ -77,10 +77,15 @@ impl TestCommand {
             create_command(program.clone(), args, lctx.double_spawn)
         };
 
-        // Apply Cargo's config.toml env first (workspace-wide), then the
-        // wrapper's command.env (per-script). This way command.env takes
-        // priority as the more specific configuration.
+        // Apply Cargo's config.toml env first (workspace-wide), then the test
+        // suite's own env (per-binary, from the build system that described it),
+        // then the wrapper's command.env (per-script). Each is more specific
+        // than the last, so each takes priority over it.
+        //
+        // The variables nextest sets below override all three: they describe the
+        // run itself, and a test binary must not be able to lie about them.
         lctx.env.apply_env(&mut cmd);
+        cmd.envs(suite_env);
         if let Some(env) = env {
             env.apply_env(&mut cmd);
         }
@@ -88,7 +93,7 @@ impl TestCommand {
         if let Some(out_dir) = lctx
             .rust_build_meta
             .build_script_out_dirs
-            .get(package.id().repr())
+            .get(package.id.repr())
         {
             // Convert the output directory to an absolute path. Build script
             // out_dirs are relative to the build directory.
@@ -105,7 +110,7 @@ impl TestCommand {
             // supported by cargo test, but discouraged.
             match &lctx.rust_build_meta.build_script_info {
                 Some(info) => {
-                    if let Some(info) = info.get(package.id().repr()) {
+                    if let Some(info) = info.get(package.id.repr()) {
                         for (key, val) in &info.envs {
                             cmd.env(key, val);
                         }
@@ -263,43 +268,44 @@ where
     cmd
 }
 
-fn apply_package_env(cmd: &mut std::process::Command, package: &PackageMetadata<'_>) {
+fn apply_package_env(cmd: &mut std::process::Command, package: &PackageInfo) {
     // These environment variables are set at runtime by cargo test:
     // https://doc.rust-lang.org/cargo/reference/environment-variables.html#environment-variables-cargo-sets-for-crates
-    cmd.env("CARGO_PKG_VERSION", package.version().to_string())
-        .env(
-            "CARGO_PKG_VERSION_MAJOR",
-            package.version().major.to_string(),
-        )
-        .env(
-            "CARGO_PKG_VERSION_MINOR",
-            package.version().minor.to_string(),
-        )
-        .env(
-            "CARGO_PKG_VERSION_PATCH",
-            package.version().patch.to_string(),
-        )
-        .env("CARGO_PKG_VERSION_PRE", package.version().pre.to_string())
-        .env("CARGO_PKG_AUTHORS", package.authors().join(":"))
-        .env("CARGO_PKG_NAME", package.name())
+    cmd.env("CARGO_PKG_VERSION", package.version.to_string())
+        .env("CARGO_PKG_VERSION_MAJOR", package.version.major.to_string())
+        .env("CARGO_PKG_VERSION_MINOR", package.version.minor.to_string())
+        .env("CARGO_PKG_VERSION_PATCH", package.version.patch.to_string())
+        .env("CARGO_PKG_VERSION_PRE", package.version.pre.to_string())
+        .env("CARGO_PKG_AUTHORS", package.authors.join(":"))
+        .env("CARGO_PKG_NAME", &package.name)
         .env(
             "CARGO_PKG_DESCRIPTION",
-            package.description().unwrap_or_default(),
+            package.description.as_deref().unwrap_or_default(),
         )
-        .env("CARGO_PKG_HOMEPAGE", package.homepage().unwrap_or_default())
-        .env("CARGO_PKG_LICENSE", package.license().unwrap_or_default())
+        .env(
+            "CARGO_PKG_HOMEPAGE",
+            package.homepage.as_deref().unwrap_or_default(),
+        )
+        .env(
+            "CARGO_PKG_LICENSE",
+            package.license.as_deref().unwrap_or_default(),
+        )
         .env(
             "CARGO_PKG_LICENSE_FILE",
-            package.license_file().unwrap_or_else(|| "".as_ref()),
+            package
+                .license_file
+                .as_deref()
+                .unwrap_or_else(|| "".as_ref()),
         )
         .env(
             "CARGO_PKG_REPOSITORY",
-            package.repository().unwrap_or_default(),
+            package.repository.as_deref().unwrap_or_default(),
         )
         .env(
             "CARGO_PKG_RUST_VERSION",
             package
-                .minimum_rust_version()
+                .minimum_rust_version
+                .as_ref()
                 .map_or(String::new(), |v| v.to_string()),
         );
 }
