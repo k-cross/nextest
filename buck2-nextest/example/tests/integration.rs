@@ -21,3 +21,24 @@ fn add_across_crates() {
 fn greeting_comes_from_buck2() {
     assert_eq!(demo::greeting(), "hello from buck2");
 }
+
+/// Checks the directories nextest names, from the position a test is in.
+///
+/// A test resolves neither of these against the project: it runs wherever Buck2
+/// said, so a relative path here would point at whatever that happens to be.
+/// Buck2 does not pass the project root to the executor, so this is also the
+/// check that it was worked out correctly from what Buck2 does say.
+#[test]
+fn nextest_names_directories_absolutely() {
+    for name in ["NEXTEST_WORKSPACE_ROOT", "CARGO_MANIFEST_DIR"] {
+        let value = std::env::var(name).unwrap_or_else(|error| panic!("{name} is set: {error}"));
+        let path = std::path::Path::new(&value);
+        assert!(path.is_absolute(), "{name} is absolute, got `{value}`");
+        // `.buckconfig` marks the example's project root, and `BUCK` the
+        // package every target here lives in -- which is that same directory.
+        assert!(
+            path.join(".buckconfig").is_file() && path.join("BUCK").is_file(),
+            "{name} names the project root, got `{value}`"
+        );
+    }
+}

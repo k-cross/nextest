@@ -34,7 +34,7 @@ fn buck2_test_runs_tests_with_nextest() {
     assert_success(&output, "buck2 test //...");
     let summary = summary_line(&output);
     assert!(
-        summary.contains("Pass 5") && summary.contains("Fail 0") && summary.contains("Skip 1"),
+        summary.contains("Pass 6") && summary.contains("Fail 0") && summary.contains("Skip 1"),
         "every test passed and the ignored one was skipped, got:\n{summary}"
     );
 
@@ -55,7 +55,7 @@ fn buck2_test_runs_tests_with_nextest() {
     assert_success(&output, "buck2 test with --run-ignored");
     let summary = summary_line(&output);
     assert!(
-        summary.contains("Pass 6") && summary.contains("Skip 0"),
+        summary.contains("Pass 7") && summary.contains("Skip 0"),
         "the ignored test ran, got:\n{summary}"
     );
 
