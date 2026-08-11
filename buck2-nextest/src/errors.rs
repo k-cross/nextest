@@ -3,7 +3,7 @@
 
 //! Error types for `buck2-nextest`.
 
-use camino::Utf8PathBuf;
+use camino::{FromPathBufError, Utf8PathBuf};
 use miette::Diagnostic;
 use nextest_filtering::errors::FiltersetParseErrors;
 use nextest_runner::errors::{
@@ -94,6 +94,57 @@ pub enum ExpectedError {
     DuplicateTarget {
         /// The duplicated label.
         label: String,
+    },
+
+    /// Buck2 sent two configured targets that share an unconfigured label.
+    #[error("Buck2 sent target `{label}` more than once")]
+    #[diagnostic(help(
+        "nextest identifies a test binary by its unconfigured label, so the same target \
+         reached under two configurations cannot be told apart; narrow the target pattern \
+         so each label is reached once"
+    ))]
+    DuplicateTargetLabel {
+        /// The duplicated label.
+        label: String,
+    },
+
+    /// Buck2's targets implied two different project roots.
+    #[error(
+        "Buck2's targets imply two different project roots: `{first}`, \
+         then `{second}` for `{label}`"
+    )]
+    #[diagnostic(help(
+        "the root is worked out from the directory Buck2 says each target runs in; \
+         narrow the target pattern, or point `v2_test_executor` at a wrapper that \
+         states the root with `--project-root`"
+    ))]
+    ConflictingProjectRoots {
+        /// The root every target up to this one implied.
+        first: Utf8PathBuf,
+        /// The root this target implied.
+        second: Utf8PathBuf,
+        /// The target that disagreed.
+        label: String,
+    },
+
+    /// The project root could not be made absolute.
+    #[error("failed to make the project root `{path}` absolute")]
+    ProjectRootAbsoluteError {
+        /// The project root as it was given.
+        path: Utf8PathBuf,
+        /// The underlying error.
+        #[source]
+        error: std::io::Error,
+    },
+
+    /// The project root, made absolute, was not valid UTF-8.
+    #[error("the project root `{path}` is not valid UTF-8 once made absolute")]
+    ProjectRootNonUtf8 {
+        /// The project root as it was given.
+        path: Utf8PathBuf,
+        /// The underlying error.
+        #[source]
+        error: FromPathBufError,
     },
 
     /// The arguments after `--` on the `buck2 test` command line were invalid.
@@ -331,7 +382,11 @@ impl ExpectedError {
             | Self::UnsupportedTestType { .. }
             | Self::UnresolvedSpecValue { .. }
             | Self::EmptyCommand { .. }
-            | Self::DuplicateTarget { .. } => NextestExitCode::SETUP_ERROR,
+            | Self::DuplicateTarget { .. }
+            | Self::DuplicateTargetLabel { .. }
+            | Self::ConflictingProjectRoots { .. }
+            | Self::ProjectRootAbsoluteError { .. }
+            | Self::ProjectRootNonUtf8 { .. } => NextestExitCode::SETUP_ERROR,
             Self::PassthroughParseError { .. }
             | Self::MalformedEnvArg { .. }
             | Self::NoExecutorSockets

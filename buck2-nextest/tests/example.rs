@@ -46,6 +46,7 @@ fn example_project_runs_end_to_end() {
     check_list(&example, &spec_path);
     check_run(&example, &spec_path);
     check_filterset_narrows_to_one_binary(&example, &spec_path);
+    check_default_filter_bounds_the_run(&example, &spec_path);
 }
 
 /// Checks that the spec the prelude produced parses into what the crate expects.
@@ -114,6 +115,7 @@ fn check_list(example: &Path, spec_path: &Path) {
         [
             "root//:demo-integration-test add_across_crates",
             "root//:demo-integration-test greeting_comes_from_buck2",
+            "root//:demo-integration-test nextest_names_directories_absolutely",
             "root//:demo-lib-test tests::add_identity",
             "root//:demo-lib-test tests::add_is_commutative",
             "root//:demo-lib-test tests::add_two_numbers",
@@ -129,8 +131,8 @@ fn check_run(example: &Path, spec_path: &Path) {
     // The reporter writes to standard error.
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("5 tests run: 5 passed, 1 skipped"),
-        "all five tests ran and passed, got:\n{stderr}"
+        stderr.contains("6 tests run: 6 passed, 1 skipped"),
+        "all six tests ran and passed, got:\n{stderr}"
     );
 }
 
@@ -150,6 +152,32 @@ fn check_filterset_narrows_to_one_binary(example: &Path, spec_path: &Path) {
     assert!(
         !stderr.contains("demo-integration-test"),
         "no test from the other binary ran, got:\n{stderr}"
+    );
+}
+
+/// Checks that a profile's default filter bounds the run, as it does under
+/// Cargo, and that `--ignore-default-filter` lifts that bound.
+fn check_default_filter_bounds_the_run(example: &Path, spec_path: &Path) {
+    let output = run_nextest(example, spec_path, ["run", "-P", "narrowed"]);
+    assert_success(&output, "run under the narrowed profile");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("3 tests run: 3 passed"),
+        "the profile's default filter left only the unit test binary, got:\n{stderr}"
+    );
+
+    let output = run_nextest(
+        example,
+        spec_path,
+        ["run", "-P", "narrowed", "--ignore-default-filter"],
+    );
+    assert_success(&output, "run ignoring the default filter");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("6 tests run: 6 passed"),
+        "ignoring the default filter ran everything, got:\n{stderr}"
     );
 }
 

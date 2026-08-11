@@ -29,8 +29,12 @@ use std::{
     sync::{Arc, Mutex},
     task::{Context, Poll},
 };
-use tokio::net::TcpStream;
-use tonic::transport::{Channel, Endpoint, Server, Uri};
+use tokio::{
+    io::{AsyncRead, AsyncWrite, ReadBuf},
+    net::TcpStream,
+    sync::oneshot,
+};
+use tonic::transport::{Channel, Endpoint, Server, Uri, server::Connected};
 use tower::Service;
 
 /// How to reach one of the two sockets, as named on the command line.
@@ -116,14 +120,19 @@ impl Socket {
     }
 }
 
-/// Serves the executor service over a socket until Buck2 hangs up.
+/// Serves the executor service over a socket until it is shut down.
 ///
 /// `serve_with_incoming_shutdown` normally consumes a listener; here the single
 /// already-connected socket is handed over as a one-item stream, so the server
-/// never accepts anything and ends when that connection closes.
+/// never accepts anything.
+///
+/// `hangup` is the caller's notice that the connection is gone: see
+/// [`WatchedIo`] for why it is needed and why it arrives as a drop rather than
+/// as a send. Serving itself ends only when `shutdown` completes.
 pub async fn serve_test_executor<T>(
     socket: Socket,
     service: TestExecutorServer<T>,
+    hangup: oneshot::Sender<()>,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<()>
 where
@@ -134,12 +143,18 @@ where
         #[cfg(unix)]
         Socket::Unix(stream) => {
             server
-                .serve_with_incoming_shutdown(once_connected(stream), shutdown)
+                .serve_with_incoming_shutdown(
+                    once_connected(WatchedIo::new(stream, hangup)),
+                    shutdown,
+                )
                 .await
         }
         Socket::Tcp(stream) => {
             server
-                .serve_with_incoming_shutdown(once_connected(stream), shutdown)
+                .serve_with_incoming_shutdown(
+                    once_connected(WatchedIo::new(stream, hangup)),
+                    shutdown,
+                )
                 .await
         }
     };
@@ -159,6 +174,83 @@ where
 /// the behaviour a real listener would have.
 fn once_connected<S>(stream: S) -> impl Stream<Item = io::Result<S>> {
     tokio_stream::once(Ok(stream)).chain(futures::stream::pending())
+}
+
+/// A socket that says when the connection using it has gone away.
+///
+/// Nothing above this layer can say it. tonic's accept loop ends only when the
+/// shutdown signal fires or the incoming stream is exhausted -- and the stream
+/// [must not end](once_connected) -- while a connection that closes merely ends
+/// the task serving it. So a Buck2 that dies before sending
+/// `EndOfTestRequests` would otherwise leave the executor waiting for specs
+/// that will never arrive, with nothing to time it out.
+///
+/// The token is never sent on; it is dropped along with this socket when tonic
+/// is done with the connection, and the receiver reads that drop as the notice.
+/// Going by the drop rather than by end-of-file covers every way the connection
+/// can end, including a protocol error and tonic declining to serve it at all.
+struct WatchedIo<S> {
+    inner: S,
+    _hangup: oneshot::Sender<()>,
+}
+
+impl<S> WatchedIo<S> {
+    fn new(inner: S, hangup: oneshot::Sender<()>) -> Self {
+        Self {
+            inner,
+            _hangup: hangup,
+        }
+    }
+}
+
+// The connection info is unused: nothing about a socket Buck2 handed over says
+// anything a request handler here needs.
+impl<S> Connected for WatchedIo<S> {
+    type ConnectInfo = ();
+
+    fn connect_info(&self) -> Self::ConnectInfo {}
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for WatchedIo<S> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_read(cx, buf)
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for WatchedIo<S> {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.get_mut().inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_shutdown(cx)
+    }
+
+    // Forwarded rather than left to the default, so that hyper keeps writing
+    // HTTP/2 frames to the socket in one call rather than one at a time.
+    fn poll_write_vectored(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[io::IoSlice<'_>],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.get_mut().inner).poll_write_vectored(cx, bufs)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.inner.is_write_vectored()
+    }
 }
 
 /// A connector that yields one pre-connected socket and then refuses.

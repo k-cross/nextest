@@ -124,6 +124,12 @@ pub struct RunContext {
     /// A path to a nextest configuration file, if one was given.
     pub config_file: Option<Utf8PathBuf>,
 
+    /// The ID that identifies this run.
+    ///
+    /// One ID covers both listing and execution, so that a test binary sees the
+    /// same `NEXTEST_RUN_ID` in both phases and can key state on it across them.
+    pub run_id: ReportUuid,
+
     /// Filtersets from the command line.
     pub filtersets: Vec<String>,
 
@@ -132,6 +138,9 @@ pub struct RunContext {
 
     /// Whether to run ignored tests.
     pub run_ignored: RunIgnored,
+
+    /// What the filtersets are bounded by.
+    pub filter_bound: FilterBound,
 
     /// The number of threads to list tests with.
     pub list_threads: usize,
@@ -190,7 +199,7 @@ impl RunContext {
         let (signal_handler, input_handler) = output.handlers();
         let runner = TestRunnerBuilder::default()
             .build(
-                ReportUuid::new_v4(),
+                self.run_id,
                 version_env_vars(),
                 &test_list,
                 &profile,
@@ -336,7 +345,7 @@ impl RunContext {
         let double_spawn = DoubleSpawnInfo::disabled();
         let target_runner = TargetRunner::empty();
         let ctx = TestExecuteContext {
-            run_id: ReportUuid::new_v4(),
+            run_id: self.run_id,
             version_env_vars: &version_env_vars,
             profile_name: profile.name(),
             double_spawn: &double_spawn,
@@ -352,7 +361,7 @@ impl RunContext {
             self.project_root.clone(),
             EnvironmentMap::empty(),
             profile,
-            FilterBound::All,
+            self.filter_bound,
             self.list_threads,
             ListProgressOptions::new(
                 ShowProgress::default(),
