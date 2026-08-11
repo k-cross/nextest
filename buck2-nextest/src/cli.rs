@@ -7,9 +7,12 @@ use crate::{
     errors::{ExpectedError, Result},
     executor::{self, ExecutorOptions, SocketSpec},
 };
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Args, Parser, ValueEnum};
-use nextest_runner::{test_filter::RunIgnored, write_str::WriteStr};
+use nextest_runner::{
+    test_filter::{FilterBound, RunIgnored},
+    write_str::WriteStr,
+};
 use std::collections::BTreeMap;
 #[cfg(unix)]
 use std::os::fd::RawFd;
@@ -67,8 +70,11 @@ struct ExecutorArgs {
     config_entry: Vec<String>,
 
     /// The Buck2 project root.
-    #[arg(long, hide = true, value_name = "PATH", default_value = ".")]
-    project_root: Utf8PathBuf,
+    ///
+    /// Buck2 does not pass this: it is worked out from what Buck2 says about the
+    /// targets it sends. Naming it here overrides that.
+    #[arg(long, hide = true, value_name = "PATH")]
+    project_root: Option<Utf8PathBuf>,
 
     /// Everything after `--`, i.e. `buck2 test ... -- <these>`.
     #[arg(last = true, value_name = "ARGS")]
@@ -151,6 +157,15 @@ pub struct FilterOpts {
     #[arg(long, value_enum, value_name = "WHICH")]
     run_ignored: Option<RunIgnoredOpt>,
 
+    /// Ignore the default filter configured in the profile.
+    ///
+    /// By default, all filtersets are intersected with the default filter
+    /// configured in the profile. This flag disables that behavior.
+    ///
+    /// This flag doesn't change the definition of the `default()` filterset.
+    #[arg(long)]
+    ignore_default_filter: bool,
+
     /// Number of threads to list tests with.
     #[arg(long, short = 'j', value_name = "N")]
     list_threads: Option<usize>,
@@ -176,6 +191,18 @@ impl FilterOpts {
         self.run_ignored.map(Into::into).unwrap_or_default()
     }
 
+    /// Returns what the filtersets are bounded by.
+    ///
+    /// Filtersets are intersected with the profile's default filter, as they
+    /// are under `cargo-nextest`, unless that is turned off.
+    pub fn filter_bound(&self) -> FilterBound {
+        if self.ignore_default_filter {
+            FilterBound::All
+        } else {
+            FilterBound::DefaultSet
+        }
+    }
+
     /// Returns how many threads to list tests with.
     ///
     /// Defaults to the machine's parallelism, as `cargo-nextest` does.
@@ -183,6 +210,30 @@ impl FilterOpts {
         self.list_threads
             .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()))
     }
+}
+
+/// Makes a project root absolute, so that everything derived from it is too.
+///
+/// Nextest passes the project root to each test process as
+/// `NEXTEST_WORKSPACE_ROOT`, and the directory the test runs in as
+/// `CARGO_MANIFEST_DIR`. A test resolves neither against the project: it runs
+/// somewhere within it, so a relative root -- such as a bare `.` -- would name
+/// wherever the test happens to be instead. `cargo-nextest` guarantees both are
+/// absolute, and so does this.
+///
+/// Symlinks are deliberately left alone: a project root is stated rather than
+/// discovered, and resolving one would leave these paths naming a place that
+/// whoever stated it did not.
+pub(crate) fn absolute_project_root(path: &Utf8Path) -> Result<Utf8PathBuf> {
+    let absolute =
+        std::path::absolute(path).map_err(|error| ExpectedError::ProjectRootAbsoluteError {
+            path: path.to_owned(),
+            error,
+        })?;
+    Utf8PathBuf::try_from(absolute).map_err(|error| ExpectedError::ProjectRootNonUtf8 {
+        path: path.to_owned(),
+        error,
+    })
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -225,12 +276,17 @@ impl ExecutorArgs {
             .map_err(|error| ExpectedError::PassthroughParseError { error })?;
 
         let extra_env = passthrough.env()?;
+        let project_root = self
+            .project_root
+            .as_deref()
+            .map(absolute_project_root)
+            .transpose()?;
         let (executor, orchestrator) = self.sockets()?;
         executor::exec(
             executor,
             orchestrator,
             ExecutorOptions {
-                project_root: self.project_root,
+                project_root,
                 profile_name: passthrough.spec.profile,
                 config_file: passthrough.spec.config_file,
                 filter: passthrough.filter,

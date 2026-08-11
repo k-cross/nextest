@@ -31,6 +31,8 @@ $ ./run.sh //:demo-lib-test                              # one target
 $ ./run.sh //... -- -E 'binary_id(root//:demo-lib-test)' # a nextest filterset
 $ ./run.sh //... -- --run-ignored all                    # including the ignored test
 $ ./run.sh //... -- -P ci                                # the `ci` profile in .config/nextest.toml
+$ ./run.sh //... -- -P narrowed                          # a profile with a `default-filter`
+$ ./run.sh //... -- -P narrowed --ignore-default-filter   # ...and that filter turned off
 $ ./run.sh //... -- --env DEMO=1                         # an extra variable for test processes
 ```
 
