@@ -16,7 +16,7 @@
 //! Everything past building a [`RunContext`] is shared with the gRPC path.
 
 use crate::{
-    cli::FilterOpts,
+    cli::{FilterOpts, absolute_project_root},
     convert::to_binary_list,
     errors::{ExpectedError, Result},
     run::RunContext,
@@ -24,7 +24,9 @@ use crate::{
 };
 use camino::Utf8PathBuf;
 use clap::{Args, Subcommand, ValueEnum};
-use nextest_runner::{list::OutputFormat, platform::BuildPlatforms, write_str::WriteStr};
+use nextest_runner::{
+    helpers::force_or_new_run_id, list::OutputFormat, platform::BuildPlatforms, write_str::WriteStr,
+};
 
 /// The spec-file subcommands.
 #[derive(Debug, Subcommand)]
@@ -93,6 +95,7 @@ pub struct SpecOpts {
 impl SpecOpts {
     fn build_context(&self, filter: &FilterOpts) -> Result<RunContext> {
         let targets = read_spec(&self.spec)?;
+        let project_root = absolute_project_root(&self.project_root)?;
 
         // Buck2 builds for the host, and there is no Cargo config to consult
         // for a target triple, so detect the host platform directly.
@@ -103,13 +106,15 @@ impl SpecOpts {
         })?;
 
         Ok(RunContext {
-            binaries: to_binary_list(&targets, &self.project_root, build_platforms),
-            project_root: self.project_root.clone(),
+            binaries: to_binary_list(&targets, &project_root, build_platforms),
+            project_root,
             profile_name: self.profile.clone(),
             config_file: self.config_file.clone(),
+            run_id: force_or_new_run_id(),
             filtersets: filter.filtersets(),
             filter_patterns: filter.patterns(),
             run_ignored: filter.run_ignored(),
+            filter_bound: filter.filter_bound(),
             list_threads: filter.list_threads(),
         })
     }

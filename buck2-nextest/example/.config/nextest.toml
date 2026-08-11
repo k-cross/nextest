@@ -7,6 +7,12 @@
 # The example's tests all pass, so this only shows up if something is wrong.
 failure-output = "immediate-final"
 
+# A profile whose default filter narrows what a bare run covers, so that the
+# tests can check both that the default filter is honoured and that
+# `--ignore-default-filter` turns it back off.
+[profile.narrowed]
+default-filter = 'binary_id(root//:demo-lib-test)'
+
 [profile.ci]
 failure-output = "immediate-final"
 fail-fast = false

@@ -46,7 +46,17 @@ $ buck2 test //... -- --env MY_VAR=1
 ```
 
 Configuration comes from `.config/nextest.toml` at the Buck2 project root, exactly as it comes from
-the workspace root under Cargo. See [Configuration](../configuration/index.md).
+the workspace root under Cargo. See [Configuration](../configuration/index.md). A profile's
+[default filter](../selecting.md#running-a-subset-of-tests-by-default) applies as it does under
+Cargo, and `--ignore-default-filter` turns it off:
+
+```console
+$ buck2 test //... -- --ignore-default-filter
+```
+
+Buck2 does not tell a test executor where the project root is, so `buck2-nextest` works it out from
+the directory Buck2 says each target runs in. Tests see it as an absolute
+`NEXTEST_WORKSPACE_ROOT`.
 
 Because [filtersets](../filtersets/index.md) here have no Cargo package graph to resolve against,
 `package()`, `deps()`, and `rdeps()` are unavailable. Everything else works, and binary IDs are Buck2
