@@ -374,7 +374,6 @@ dependencies = [
  "camino-tempfile",
  "clap",
  "futures",
- "guppy",
  "hyper",
  "hyper-util",
  "iddqd",

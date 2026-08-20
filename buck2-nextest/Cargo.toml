@@ -16,7 +16,6 @@ publish = false
 camino.workspace = true
 clap = { workspace = true, features = ["derive", "env", "unicode", "wrap_help"] }
 futures.workspace = true
-guppy.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
 iddqd.workspace = true
