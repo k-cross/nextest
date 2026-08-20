@@ -21,6 +21,9 @@ use nextest_runner::{
     run_mode::NextestRunMode,
     test_filter::{FilterBound, RunIgnored, TestFilter, TestFilterPatterns},
 };
+use nextest_session::{
+    SessionContext, SessionInputs, TestListOptions, TestSession, errors::SessionBuildError,
+};
 use std::sync::Arc;
 
 /// Test filtering options.
@@ -153,6 +156,57 @@ impl TestBuildFilter {
             list_progress_options,
         )
         .map_err(|err| ExpectedError::CreateTestListError { err })
+    }
+
+    #[expect(clippy::too_many_arguments)]
+    pub(crate) fn compute_test_session<'g>(
+        &self,
+        ctx: &'g SessionContext,
+        profile: &'g EvaluatableProfile<'g>,
+        graph: &'g PackageGraph,
+        packages: &'g IdOrdMap<PackageInfo>,
+        workspace_root: Utf8PathBuf,
+        binary_list: Arc<BinaryList>,
+        test_filter: &TestFilter,
+        env: EnvironmentMap,
+        reuse_build: &ReuseBuildInfo,
+        list_progress_options: ListProgressOptions,
+    ) -> Result<TestSession<'g>> {
+        let path_mapper = make_path_mapper(
+            reuse_build,
+            graph,
+            &binary_list.rust_build_meta.target_directory,
+            &binary_list.rust_build_meta.build_directory,
+        )?;
+
+        TestSession::build(
+            ctx,
+            profile,
+            SessionInputs {
+                binary_list,
+                packages,
+                workspace_root,
+                env,
+                path_mapper,
+            },
+            test_filter,
+            TestListOptions {
+                partitioner_builder: self.partition.as_ref(),
+                platform_filter: self.platform_filter.into(),
+                filter_bound: if self.ignore_default_filter {
+                    FilterBound::All
+                } else {
+                    FilterBound::DefaultSet
+                },
+                // TODO: do we need to allow customizing this?
+                list_threads: get_num_cpus(),
+                progress: list_progress_options,
+            },
+        )
+        .map_err(|error| match error {
+            SessionBuildError::FromMessages(err) => ExpectedError::FromMessagesError { err },
+            SessionBuildError::CreateTestList(err) => ExpectedError::CreateTestListError { err },
+        })
     }
 
     pub(crate) fn make_test_filter(
