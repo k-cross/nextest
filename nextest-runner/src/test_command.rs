@@ -145,7 +145,7 @@ impl TestCommand {
 
         apply_package_env(&mut cmd, package);
 
-        apply_ld_dyld_env(&mut cmd, lctx.dylib_path);
+        apply_ld_dyld_env(&mut cmd, &suite_dylib_path(lctx, suite_env));
 
         // Expose paths to non-test binaries at runtime so that relocated paths
         // work.
@@ -374,6 +374,59 @@ where
 ///
 /// Nextest never changes these environment variables within its own process, so caching them is
 /// valid.
+/// Returns the dynamic library search path for a test binary.
+///
+/// [`LocalExecuteContext::dylib_path`] puts the build's library directories
+/// ahead of the ones nextest inherited from its own environment. A test suite
+/// that states its own value for the variable -- something only a non-Cargo
+/// build system does, since Cargo binaries carry no invocation environment --
+/// stands in for that inherited part: the build system is describing the
+/// environment its test needs, and nextest's directories still have to come
+/// first for the binary to load libstd at all.
+fn suite_dylib_path<'a>(
+    lctx: &'a LocalExecuteContext<'_>,
+    suite_env: &BTreeMap<String, String>,
+) -> Cow<'a, OsStr> {
+    match suite_env.get(dylib_path_envvar()) {
+        Some(suite_value) => merge_dylib_path(
+            &lctx.rust_build_meta.dylib_paths(),
+            suite_value,
+            lctx.dylib_path,
+        ),
+        None => Cow::Borrowed(lctx.dylib_path),
+    }
+}
+
+/// Puts `build_dirs` ahead of the suite's own value for the dynamic library
+/// search path.
+///
+/// Falls back to `inherited` if the result cannot be joined, which is
+/// unreachable in practice: [`TestList::create_dylib_path`] joined these same
+/// directories at list time, and the suite's components come from
+/// [`std::env::split_paths`], so none of them contains the separator.
+///
+/// [`TestList::create_dylib_path`]: crate::list::TestList
+fn merge_dylib_path<'a>(
+    build_dirs: &[Utf8PathBuf],
+    suite_value: &str,
+    inherited: &'a OsStr,
+) -> Cow<'a, OsStr> {
+    let paths = build_dirs
+        .iter()
+        .map(|dir| dir.clone().into_std_path_buf())
+        .chain(std::env::split_paths(suite_value));
+    match std::env::join_paths(paths) {
+        Ok(joined) => Cow::Owned(joined),
+        Err(error) => {
+            warn!(
+                "failed to add `{suite_value}` from the test suite to {}: {error}",
+                dylib_path_envvar(),
+            );
+            Cow::Borrowed(inherited)
+        }
+    }
+}
+
 pub(crate) fn apply_ld_dyld_env(cmd: &mut std::process::Command, dylib_path: &OsStr) {
     fn is_sip_sanitized(var: &str) -> bool {
         // Look for variables starting with LD_ or DYLD_.
@@ -409,6 +462,7 @@ pub(crate) fn apply_ld_dyld_env(cmd: &mut std::process::Command, dylib_path: &Os
 mod tests {
     use super::*;
     use indoc::indoc;
+    use std::path::PathBuf;
 
     #[test]
     fn parse_build_script() {
@@ -436,6 +490,51 @@ mod tests {
                 ("NEW_EMPTY_VALUE".to_owned(), "".to_owned()),
             ],
             "parsed key-value pairs match"
+        );
+    }
+
+    #[test]
+    fn suite_dylib_path_goes_after_the_build_directories() {
+        let build_dirs = [
+            Utf8PathBuf::from("/rustc/lib"),
+            Utf8PathBuf::from("/build/deps"),
+        ];
+        let inherited = OsString::from("/inherited");
+        let merged = merge_dylib_path(&build_dirs, "/suite/libs", &inherited);
+
+        let components: Vec<_> = std::env::split_paths(&merged).collect();
+        assert_eq!(
+            components,
+            [
+                PathBuf::from("/rustc/lib"),
+                PathBuf::from("/build/deps"),
+                PathBuf::from("/suite/libs"),
+            ],
+            "the build's directories load first, then the suite's own"
+        );
+        assert!(
+            !components.contains(&PathBuf::from("/inherited")),
+            "the suite's value stands in for what nextest inherited, got {components:?}"
+        );
+    }
+
+    #[test]
+    fn a_multi_component_suite_value_is_kept_whole() {
+        let build_dirs = [Utf8PathBuf::from("/rustc/lib")];
+        let inherited = OsString::from("/inherited");
+        let suite_value = std::env::join_paths(["/suite/a", "/suite/b"])
+            .expect("the test's own paths join")
+            .into_string()
+            .expect("the joined path is UTF-8");
+        let merged = merge_dylib_path(&build_dirs, &suite_value, &inherited);
+
+        assert_eq!(
+            std::env::split_paths(&merged).collect::<Vec<_>>(),
+            [
+                PathBuf::from("/rustc/lib"),
+                PathBuf::from("/suite/a"),
+                PathBuf::from("/suite/b"),
+            ],
         );
     }
 }
