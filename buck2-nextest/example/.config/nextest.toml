@@ -18,3 +18,9 @@ failure-output = "immediate-final"
 fail-fast = false
 retries = 2
 status-level = "all"
+
+# A profile that writes a JUnit report, so that the tests can check the store
+# directory is created and the report written. The store directory is
+# `target/nextest/with-junit` under the project root.
+[profile.with-junit.junit]
+path = "junit.xml"

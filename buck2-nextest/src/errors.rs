@@ -10,6 +10,7 @@ use nextest_runner::errors::{
     ConfigParseError, CreateTestListError, FromMessagesError, ProfileNotFound,
     TestFilterBuildError, TestRunnerBuildError,
 };
+use nextest_session::errors::StoreDirCreateError;
 use thiserror::Error;
 
 /// The result type used throughout `buck2-nextest`.
@@ -329,6 +330,14 @@ pub enum ExpectedError {
         error: TestRunnerBuildError,
     },
 
+    /// Creating the store directory for the profile's reports failed.
+    #[error("failed to create the profile's store directory")]
+    StoreDirCreateError {
+        /// The underlying error.
+        #[source]
+        error: StoreDirCreateError,
+    },
+
     /// Writing reporter output failed.
     #[error("failed to write test output")]
     WriteEventError {
@@ -412,7 +421,9 @@ impl ExpectedError {
             Self::FromMessagesError { .. } | Self::CreateTestListError { .. } => {
                 NextestExitCode::TEST_LIST_CREATION_FAILED
             }
-            Self::TestRunnerBuildError { .. } => NextestExitCode::SETUP_ERROR,
+            Self::TestRunnerBuildError { .. } | Self::StoreDirCreateError { .. } => {
+                NextestExitCode::SETUP_ERROR
+            }
             Self::WriteEventError { .. } => NextestExitCode::WRITE_OUTPUT_ERROR,
             Self::TestRunFailed => NextestExitCode::TEST_RUN_FAILED,
             Self::NoTestsRun => NextestExitCode::NO_TESTS_RUN,

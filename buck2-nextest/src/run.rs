@@ -3,45 +3,32 @@
 
 //! Listing and running tests described by a Buck2 spec.
 //!
-//! This mirrors `cargo-nextest`'s run path, minus everything Cargo-specific:
-//! there is no build step, no package graph, and no path remapping.
+//! The pipeline itself -- profiles, filtersets, listing, running, reporting,
+//! and the exit-code policy -- is `nextest-session`'s. This module supplies
+//! Buck2's inputs and policy: the converted binary list, where output goes,
+//! and how a run with no tests in it is judged.
 
 use crate::{
     convert::Buck2BinaryList,
     errors::{ExpectedError, Result},
 };
 use camino::Utf8PathBuf;
-use nextest_filtering::{Filterset, FiltersetKind, KnownGroups, ParseContext};
-use nextest_metadata::NextestExitCode;
-use nextest_runner::{
-    cargo_config::EnvironmentMap,
-    config::core::{ConfigExperimental, EarlyProfile, EvaluatableProfile, NextestConfig},
-    double_spawn::DoubleSpawnInfo,
-    errors::WriteEventError,
-    helpers::{ShowTerminalProgress, ThemeCharacters},
-    input::InputHandlerKind,
-    list::{ListProgressOptions, OutputFormat, RustTestArtifact, TestExecuteContext, TestList},
-    reporter::{
-        ReporterBuilder, ReporterOutput, ShowProgress,
-        events::{FinalRunStats, ReporterEvent},
-        structured::StructuredReporter,
-    },
-    reuse_build::PathMapper,
-    run_mode::NextestRunMode,
-    runner::{TestRunnerBuilder, VersionEnvVars, configure_handle_inheritance},
-    signal::SignalHandlerKind,
-    target_runner::TargetRunner,
-    test_filter::{FilterBound, RunIgnored, TestFilter, TestFilterPatterns},
-    write_str::WriteStr,
+use nextest_session::{
+    ConfigExperimental, EarlyProfile, EnvironmentMap, EvaluatableProfile, FilterBound,
+    FiltersetKind, InputHandlerKind, KnownGroups, ListProgressOptions, NextestConfig,
+    NextestRunMode, NoTestsBehavior, OutputFormat, ParseContext, PathMapper, ReportUuid, Reporter,
+    ReporterBuilder, ReporterEvent, ReporterOutput, RunIgnored, SessionContext, SessionInputs,
+    ShowProgress, ShowTerminalProgress, SignalHandlerKind, StructuredReporter, TestFilter,
+    TestFilterPatterns, TestListOptions, TestRunnerBuilder, TestSession, ThemeCharacters, WriteStr,
+    errors::{ExecuteError, SessionBuildError},
+    evaluate_profile, final_outcome, parse_filtersets, run_to_completion,
 };
-use quick_junit::ReportUuid;
 use std::{
     convert::Infallible,
     fmt,
     io::{IsTerminal, Write},
     sync::Arc,
 };
-use thiserror::Error;
 
 /// Where the displayer's output goes, and so who owns the terminal.
 ///
@@ -78,23 +65,6 @@ impl OutputTo {
             Self::PlainStderr => (SignalHandlerKind::Standard, InputHandlerKind::Noop),
         }
     }
-}
-
-/// Why a run's event callback failed.
-///
-/// The two arms are kept apart so the message says whether the run stopped
-/// because results could not be delivered or because they could not be
-/// rendered. Implementing `Error` rather than only `Debug` is what lets
-/// `TestRunnerExecuteErrors` render this properly.
-#[derive(Debug, Error)]
-enum RunError {
-    /// Forwarding an event to the caller's sink failed.
-    #[error("failed to forward results: {0}")]
-    Sink(String),
-
-    /// Writing an event to the reporter failed.
-    #[error(transparent)]
-    Report(WriteEventError),
 }
 
 /// Writes the displayer's output to standard error, without any cursor control.
@@ -144,6 +114,11 @@ pub struct RunContext {
 
     /// The number of threads to list tests with.
     pub list_threads: usize,
+
+    /// How to treat a run in which no tests were selected.
+    ///
+    /// `None` is nextest's default: such a run is an error.
+    pub no_tests: Option<NoTestsBehavior>,
 }
 
 impl RunContext {
@@ -152,11 +127,12 @@ impl RunContext {
         let config = self.load_config()?;
         let early_profile = self.load_profile(&config)?;
         let filter = self.build_filter(&early_profile.known_groups())?;
-        let profile = early_profile
-            .apply_build_platforms(&self.binaries.binary_list.rust_build_meta.build_platforms);
-        let test_list = self.build_test_list(&profile, &filter)?;
+        let profile = self.evaluate_profile(early_profile)?;
+        let ctx = self.session_context();
+        let session = self.build_session(&ctx, &profile, &filter)?;
 
-        test_list
+        session
+            .test_list()
             .write(format, writer, false)
             .map_err(|error| ExpectedError::WriteEventError {
                 error: std::io::Error::other(error),
@@ -184,7 +160,7 @@ impl RunContext {
         self.run_inner(cli_args, OutputTo::PlainStderr, sink)
     }
 
-    fn run_inner<E, F>(&self, cli_args: Vec<String>, output: OutputTo, mut sink: F) -> Result<i32>
+    fn run_inner<E, F>(&self, cli_args: Vec<String>, output: OutputTo, sink: F) -> Result<i32>
     where
         F: FnMut(&ReporterEvent<'_>) -> std::result::Result<(), E> + Send,
         E: fmt::Debug + Send,
@@ -192,22 +168,17 @@ impl RunContext {
         let config = self.load_config()?;
         let early_profile = self.load_profile(&config)?;
         let filter = self.build_filter(&early_profile.known_groups())?;
-        let profile = early_profile
-            .apply_build_platforms(&self.binaries.binary_list.rust_build_meta.build_platforms);
-        let test_list = self.build_test_list(&profile, &filter)?;
+        let profile = self.evaluate_profile(early_profile)?;
+        let ctx = self.session_context();
+        let session = self.build_session(&ctx, &profile, &filter)?;
 
         let (signal_handler, input_handler) = output.handlers();
-        let runner = TestRunnerBuilder::default()
-            .build(
-                self.run_id,
-                version_env_vars(),
-                &test_list,
-                &profile,
+        let runner = session
+            .build_runner(
+                TestRunnerBuilder::default(),
                 cli_args,
                 signal_handler,
                 input_handler,
-                DoubleSpawnInfo::disabled(),
-                TargetRunner::empty(),
             )
             .map_err(|error| ExpectedError::TestRunnerBuildError { error })?;
 
@@ -225,39 +196,29 @@ impl RunContext {
             },
         };
 
-        let mut reporter = ReporterBuilder::default().build(
-            &test_list,
+        let reporter: Reporter<'_> = ReporterBuilder::default().build(
+            session.test_list(),
             &profile,
             ShowTerminalProgress::No,
             output,
             StructuredReporter::new(),
         );
 
-        configure_handle_inheritance(false).map_err(|error| ExpectedError::WriteEventError {
-            error: std::io::Error::other(error),
-        })?;
+        let executed = run_to_completion(runner, reporter, false, sink).map_err(
+            |error: ExecuteError<E>| ExpectedError::WriteEventError {
+                error: std::io::Error::other(error.to_string()),
+            },
+        )?;
 
-        let run_stats = runner
-            .try_execute(|event| {
-                // The sink goes first: if it has failed, there is no point
-                // rendering an event nobody will see, and returning its error
-                // is what starts a graceful cancellation.
-                sink(&event).map_err(|error| RunError::Sink(format!("{error:?}")))?;
-                reporter.report_event(event).map_err(RunError::Report)
-            })
-            .map_err(|errors| ExpectedError::WriteEventError {
-                error: std::io::Error::other(errors.to_string()),
-            })?;
-        reporter.finish();
-
-        match run_stats.summarize_final() {
-            FinalRunStats::Success => Ok(0),
-            // A run with nothing in it is an error by default, matching
-            // cargo-nextest's `--no-tests` default.
-            FinalRunStats::NoTestsRun => Ok(NextestExitCode::NO_TESTS_RUN),
-            FinalRunStats::Failed { .. } | FinalRunStats::Cancelled { .. } => {
-                Ok(NextestExitCode::TEST_RUN_FAILED)
-            }
+        match final_outcome(
+            NextestRunMode::Test,
+            executed.run_stats,
+            self.no_tests,
+            None,
+            false,
+        ) {
+            Ok(()) => Ok(0),
+            Err(failure) => Ok(failure.exit_code()),
         }
     }
 
@@ -290,6 +251,17 @@ impl RunContext {
             .map_err(|error| ExpectedError::ProfileNotFound { error })
     }
 
+    fn evaluate_profile<'cfg>(
+        &self,
+        early_profile: EarlyProfile<'cfg>,
+    ) -> Result<EvaluatableProfile<'cfg>> {
+        evaluate_profile(
+            early_profile,
+            &self.binaries.binary_list.rust_build_meta.build_platforms,
+        )
+        .map_err(|error| ExpectedError::StoreDirCreateError { error })
+    }
+
     /// Builds the test filter.
     ///
     /// `known_groups` comes from the profile: `group()` is legal in a test
@@ -297,18 +269,8 @@ impl RunContext {
     /// filterset is compiled.
     fn build_filter(&self, known_groups: &KnownGroups) -> Result<TestFilter> {
         let pcx = ParseContext::without_graph();
-        // Report every bad filterset at once rather than stopping at the first.
-        let mut exprs = Vec::with_capacity(self.filtersets.len());
-        let mut all_errors = Vec::new();
-        for input in &self.filtersets {
-            match Filterset::parse(input.clone(), &pcx, FiltersetKind::Test, known_groups) {
-                Ok(expr) => exprs.push(expr),
-                Err(errors) => all_errors.push(errors),
-            }
-        }
-        if !all_errors.is_empty() {
-            return Err(ExpectedError::FiltersetParseError { all_errors });
-        }
+        let exprs = parse_filtersets(&pcx, &self.filtersets, FiltersetKind::Test, known_groups)
+            .map_err(|all_errors| ExpectedError::FiltersetParseError { all_errors })?;
 
         TestFilter::new(
             NextestRunMode::Test,
@@ -319,66 +281,51 @@ impl RunContext {
         .map_err(|error| ExpectedError::TestFilterBuildError { error })
     }
 
-    fn build_test_list<'a>(
-        &'a self,
-        profile: &EvaluatableProfile<'_>,
-        filter: &TestFilter,
-    ) -> Result<TestList<'a>> {
-        // No path remapping: the spec's paths are already where the binaries are.
-        let path_mapper = PathMapper::noop();
-        let rust_build_meta = self
-            .binaries
-            .binary_list
-            .rust_build_meta
-            .map_paths(&path_mapper);
-
-        let artifacts = RustTestArtifact::from_binary_list(
-            &self.binaries.packages,
-            Arc::new(self.binaries.binary_list.clone()),
-            &rust_build_meta,
-            &path_mapper,
-            None,
+    fn session_context(&self) -> SessionContext {
+        SessionContext::simple(
+            self.run_id,
+            semver::Version::parse(env!("CARGO_PKG_VERSION"))
+                .expect("crate version is valid semver"),
         )
-        .map_err(|error| ExpectedError::FromMessagesError { error })?;
-
-        let version_env_vars = version_env_vars();
-        let double_spawn = DoubleSpawnInfo::disabled();
-        let target_runner = TargetRunner::empty();
-        let ctx = TestExecuteContext {
-            run_id: self.run_id,
-            version_env_vars: &version_env_vars,
-            profile_name: profile.name(),
-            double_spawn: &double_spawn,
-            target_runner: &target_runner,
-        };
-
-        TestList::new(
-            &ctx,
-            artifacts,
-            rust_build_meta,
-            filter,
-            None,
-            self.project_root.clone(),
-            EnvironmentMap::empty(),
-            profile,
-            self.filter_bound,
-            self.list_threads,
-            ListProgressOptions::new(
-                ShowProgress::default(),
-                ShowTerminalProgress::No,
-                ThemeCharacters::default(),
-                std::io::stderr().is_terminal(),
-            ),
-        )
-        .map_err(|error| ExpectedError::CreateTestListError { error })
     }
-}
 
-fn version_env_vars() -> VersionEnvVars {
-    VersionEnvVars {
-        current_version: semver::Version::parse(env!("CARGO_PKG_VERSION"))
-            .expect("crate version is valid semver"),
-        required_version: None,
-        recommended_version: None,
+    fn build_session<'a>(
+        &'a self,
+        ctx: &'a SessionContext,
+        profile: &'a EvaluatableProfile<'a>,
+        filter: &TestFilter,
+    ) -> Result<TestSession<'a>> {
+        TestSession::build(
+            ctx,
+            profile,
+            SessionInputs {
+                binary_list: Arc::new(self.binaries.binary_list.clone()),
+                packages: &self.binaries.packages,
+                workspace_root: self.project_root.clone(),
+                env: EnvironmentMap::empty(),
+                // No path remapping: the spec's paths are already where the
+                // binaries are.
+                path_mapper: PathMapper::noop(),
+            },
+            filter,
+            TestListOptions {
+                partitioner_builder: None,
+                platform_filter: None,
+                filter_bound: self.filter_bound,
+                list_threads: self.list_threads,
+                progress: ListProgressOptions::new(
+                    ShowProgress::default(),
+                    ShowTerminalProgress::No,
+                    ThemeCharacters::default(),
+                    std::io::stderr().is_terminal(),
+                ),
+            },
+        )
+        .map_err(|error| match error {
+            SessionBuildError::FromMessages(error) => ExpectedError::FromMessagesError { error },
+            SessionBuildError::CreateTestList(error) => {
+                ExpectedError::CreateTestListError { error }
+            }
+        })
     }
 }
