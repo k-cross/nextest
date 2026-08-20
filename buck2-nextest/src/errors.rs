@@ -345,19 +345,6 @@ pub enum ExpectedError {
         #[source]
         error: std::io::Error,
     },
-
-    /// The test run itself reported failures.
-    ///
-    /// This carries no message: the reporter has already described what failed.
-    #[error("test run failed")]
-    TestRunFailed,
-
-    /// No tests were run, and that was configured to be an error.
-    ///
-    /// Only reachable from the spec-file path. Under Buck2 an empty run is
-    /// success, since Buck2 chose the targets.
-    #[error("no tests to run")]
-    NoTestsRun,
 }
 
 impl ExpectedError {
@@ -425,8 +412,6 @@ impl ExpectedError {
                 NextestExitCode::SETUP_ERROR
             }
             Self::WriteEventError { .. } => NextestExitCode::WRITE_OUTPUT_ERROR,
-            Self::TestRunFailed => NextestExitCode::TEST_RUN_FAILED,
-            Self::NoTestsRun => NextestExitCode::NO_TESTS_RUN,
         }
     }
 }
