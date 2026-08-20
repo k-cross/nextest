@@ -116,6 +116,9 @@ impl SpecOpts {
             run_ignored: filter.run_ignored(),
             filter_bound: filter.filter_bound(),
             list_threads: filter.list_threads(),
+            // The spec-file path is a development tool driven by hand, so
+            // nextest's default judgment applies: no tests is an error.
+            no_tests: None,
         })
     }
 }

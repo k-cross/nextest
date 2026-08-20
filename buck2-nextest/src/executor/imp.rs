@@ -46,8 +46,9 @@ use crate::{
     spec::Buck2TestTarget,
 };
 use camino::{Utf8Path, Utf8PathBuf};
-use nextest_metadata::{NextestExitCode, RustBinaryId};
+use nextest_metadata::RustBinaryId;
 use nextest_runner::{helpers::force_or_new_run_id, platform::BuildPlatforms};
+use nextest_session::NoTestsBehavior;
 use std::{
     collections::{BTreeMap, HashMap},
     sync::Arc,
@@ -326,6 +327,12 @@ fn run(runtime: &Runtime, prepared: Prepared, options: ExecutorOptions) -> Resul
         run_ignored: options.filter.run_ignored(),
         filter_bound: options.filter.filter_bound(),
         list_threads: options.filter.list_threads(),
+        // `cargo-nextest` treats a run with no tests in it as an error, on the
+        // grounds that the person asked for tests and got none. Buck2 chooses
+        // the target set itself, so `buck2 test //:some-library` finding no
+        // tests is routine rather than a mistake -- and Buck2 says "0 tests"
+        // plainly either way.
+        no_tests: Some(NoTestsBehavior::Pass),
     };
 
     let sink = Arc::new(ResultSink::new(
@@ -351,15 +358,7 @@ fn run(runtime: &Runtime, prepared: Prepared, options: ExecutorOptions) -> Resul
     // the write failure that followed -- which says nothing about the cause.
     drained?;
 
-    // `cargo-nextest` treats a run with no tests in it as an error, on the
-    // grounds that the person asked for tests and got none. Buck2 chooses the
-    // target set itself, so `buck2 test //:some-library` finding no tests is
-    // routine rather than a mistake -- and Buck2 says "0 tests" plainly either
-    // way.
-    let exit_code = match exit_code? {
-        NextestExitCode::NO_TESTS_RUN => 0,
-        code => code,
-    };
+    let exit_code = exit_code?;
 
     let mut client = client;
     runtime
