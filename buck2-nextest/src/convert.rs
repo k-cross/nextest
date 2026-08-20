@@ -9,7 +9,6 @@
 
 use crate::spec::Buck2TestTarget;
 use camino::{Utf8Path, Utf8PathBuf};
-use guppy::PackageId;
 use iddqd::IdOrdMap;
 use nextest_metadata::{BuildPlatform, RustBinaryId, RustTestBinaryKind};
 use nextest_runner::{
@@ -19,6 +18,7 @@ use nextest_runner::{
     },
     platform::BuildPlatforms,
 };
+use nextest_session::PackageId;
 use semver::Version;
 
 /// The name Buck2 uses for its build files.
