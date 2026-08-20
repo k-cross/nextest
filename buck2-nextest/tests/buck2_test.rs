@@ -63,6 +63,15 @@ fn buck2_test_runs_tests_with_nextest() {
     // nextest's usual "no tests is a failure" rule does not apply.
     let output = run(&example, &["//:demo"]);
     assert_success(&output, "buck2 test on a target with no tests");
+
+    // ...and configuration is still read from the project root, which with no
+    // targets nothing Buck2 sent implies. The executor's own directory is
+    // Buck2's output directory, where this profile would not be found.
+    let output = run(&example, &["//:demo", "--", "-P", "narrowed"]);
+    assert_success(
+        &output,
+        "buck2 test on a target with no tests, under a profile",
+    );
 }
 
 /// Runs `buck2 test`, pointing Buck2 at the binary this test was built with.
