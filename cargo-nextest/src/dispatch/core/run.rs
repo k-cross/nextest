@@ -13,7 +13,7 @@ use super::{
 };
 use crate::{
     ExpectedError, Result,
-    dispatch::helpers::{build_filtersets, resolve_user_config},
+    dispatch::helpers::{build_filtersets, evaluate_profile, resolve_user_config},
     output::OutputWriter,
     reuse_build::ReuseBuildOpts,
 };
@@ -23,13 +23,14 @@ use nextest_filtering::{FiltersetKind, ParseContext};
 use nextest_runner::{
     cargo_config::EnvironmentMap,
     config::{
-        core::ConfigExperimental,
+        core::{ConfigExperimental, VersionOnlyConfig},
         elements::{MaxFail, RetryPolicy, TestThreads},
     },
     errors::DisplayErrorChain,
     helpers::{ShowTerminalProgress, ThemeCharacters, force_or_new_run_id},
     input::InputHandlerKind,
-    list::{BinaryList, ListProgressOptions, TestExecuteContext, TestList},
+    list::{BinaryList, ListProgressOptions, TestList},
+    platform::BuildPlatforms,
     record::{
         ComputedRerunInfo, PortableRecording, RecordOpts, RecordReader, RecordRetentionPolicy,
         RecordSession, RecordSessionConfig, RerunRootInfo, RunIdOrRecordingSelector, RunIdSelector,
@@ -48,8 +49,8 @@ use nextest_runner::{
     user_config::{UserConfigExperimental, elements::UiConfig},
 };
 use nextest_session::{
-    NoTestsBehavior, RunFailure, SessionContext, TestSession, errors::ExecuteError,
-    evaluate_profile, final_outcome, into_report_errors, run_to_completion,
+    NoTestsBehavior, RunFailure, SessionContext, TestSession, errors::ExecuteError, final_outcome,
+    into_report_errors, run_to_completion,
 };
 use quick_junit::ReportUuid;
 use std::{collections::BTreeMap, convert::Infallible, io::IsTerminal, sync::Arc, time::Duration};
@@ -875,30 +876,27 @@ impl App {
         Ok(Self { base, build_filter })
     }
 
-    pub(crate) fn build_test_list(
+    /// Builds the [`SessionContext`] for a command, with this crate's version
+    /// configuration, double-spawn support, and target runners.
+    pub(crate) fn session_context(
         &self,
-        ctx: &TestExecuteContext<'_>,
-        binary_list: Arc<BinaryList>,
-        test_filter: &TestFilter,
-        profile: &nextest_runner::config::core::EvaluatableProfile<'_>,
-        show_progress: ShowProgress,
-    ) -> Result<TestList<'_>> {
-        let env = EnvironmentMap::new(&self.base.cargo_configs);
-        self.build_filter.compute_test_list(
-            ctx,
-            self.base.graph(),
-            self.base.packages(),
-            self.base.workspace_root.clone(),
-            binary_list,
-            test_filter,
-            env,
-            profile,
-            &self.base.reuse_build,
-            self.list_progress_options(show_progress),
-        )
+        version_only_config: &VersionOnlyConfig,
+        build_platforms: &BuildPlatforms,
+    ) -> SessionContext {
+        let nextest_version_config = version_only_config.nextest_version();
+        SessionContext {
+            run_id: force_or_new_run_id(),
+            version_env_vars: VersionEnvVars {
+                current_version: self.base.current_version.clone(),
+                required_version: nextest_version_config.required.version().cloned(),
+                recommended_version: nextest_version_config.recommended.version().cloned(),
+            },
+            double_spawn: self.base.load_double_spawn().clone(),
+            target_runner: self.base.load_runner(build_platforms).clone(),
+        }
     }
 
-    fn build_test_session<'a>(
+    pub(crate) fn build_test_session<'a>(
         &'a self,
         ctx: &'a SessionContext,
         profile: &'a nextest_runner::config::core::EvaluatableProfile<'a>,
@@ -1148,26 +1146,9 @@ impl App {
             RunKindOpts::Bench { .. } => self.base.build_binary_list("bench")?,
         };
         let build_platforms = &binary_list.rust_build_meta.build_platforms.clone();
-        let double_spawn = self.base.load_double_spawn();
-        let target_runner = self.base.load_runner(build_platforms);
 
-        let profile = evaluate_profile(profile, build_platforms).map_err(|error| {
-            ExpectedError::StoreDirCreateError {
-                store_dir: error.store_dir,
-                err: error.error,
-            }
-        })?;
-        let nextest_version_config = version_only_config.nextest_version();
-        let ctx = SessionContext {
-            run_id: force_or_new_run_id(),
-            version_env_vars: VersionEnvVars {
-                current_version: self.base.current_version.clone(),
-                required_version: nextest_version_config.required.version().cloned(),
-                recommended_version: nextest_version_config.recommended.version().cloned(),
-            },
-            double_spawn: double_spawn.clone(),
-            target_runner: target_runner.clone(),
-        };
+        let profile = evaluate_profile(profile, build_platforms)?;
+        let ctx = self.session_context(&version_only_config, build_platforms);
 
         let session = self.build_test_session(
             &ctx,
