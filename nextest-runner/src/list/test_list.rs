@@ -538,7 +538,9 @@ impl<'g> TestList<'g> {
                 non_test_binaries: BTreeSet::new(), // Not stored in summary.
                 cwd: suite_summary.cwd.clone(),
                 build_platform: suite_summary.binary.build_platform,
-                // Not carried in the summary format; see `RustTestBinary`.
+                // Not carried in the summary format; see
+                // `TestBinaryInvocation::warn_if_unrepresentable`, which is what
+                // keeps a non-empty one from being written out unnoticed.
                 invocation: TestBinaryInvocation::empty(),
                 status,
             };
@@ -663,6 +665,9 @@ impl<'g> TestList<'g> {
             .iter()
             .map(|test_suite| {
                 let (status, test_cases) = test_suite.status.to_summary();
+                test_suite
+                    .invocation
+                    .warn_if_unrepresentable(&test_suite.binary_id);
                 let testsuite = RustTestSuiteSummary {
                     package_name: test_suite.package.name.clone(),
                     binary: RustTestBinarySummary {

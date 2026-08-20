@@ -82,7 +82,9 @@ impl BinaryList {
                 kind: bin.kind,
                 id: bin.binary_id,
                 build_platform: bin.build_platform,
-                // Not carried in the summary format; see `RustTestBinary`.
+                // Not carried in the summary format; see
+                // `TestBinaryInvocation::warn_if_unrepresentable`, which is what
+                // keeps a non-empty one from being written out unnoticed.
                 invocation: TestBinaryInvocation::empty(),
             })
             .collect();
@@ -139,6 +141,7 @@ impl BinaryList {
                         .strip_prefix(build_directory)
                         .expect("test binary paths must be within the build directory"),
                 );
+                bin.invocation.warn_if_unrepresentable(&bin.id);
                 let summary = RustTestBinarySummary {
                     binary_name: bin.name.clone(),
                     package_id: bin.package_id.clone(),
@@ -161,6 +164,7 @@ impl BinaryList {
         self.rust_binaries
             .iter()
             .map(|bin| {
+                bin.invocation.warn_if_unrepresentable(&bin.id);
                 let summary = RustTestBinarySummary {
                     binary_name: bin.name.clone(),
                     package_id: bin.package_id.clone(),
