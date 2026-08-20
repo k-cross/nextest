@@ -16,7 +16,9 @@
 //! arguments can still be appended to the end.
 
 use camino::Utf8PathBuf;
+use nextest_metadata::RustBinaryId;
 use std::collections::BTreeMap;
+use tracing::warn;
 
 /// Extra details for invoking a test binary, beyond its path.
 ///
@@ -67,5 +69,35 @@ impl TestBinaryInvocation {
     /// Returns true if there is nothing to apply beyond the binary path.
     pub fn is_empty(&self) -> bool {
         self.leading_args.is_empty() && self.env.is_empty() && self.cwd.is_none()
+    }
+
+    /// Warns if this invocation is about to be dropped on the way to a
+    /// serializable summary.
+    ///
+    /// `nextest-metadata`'s summary types have no place for an invocation, so
+    /// anything written out -- an archive, a recording, `--binaries-metadata`
+    /// -- comes back with [`TestBinaryInvocation::empty`]. Giving them one is a
+    /// breaking change to that crate's stable API, so it waits for a release
+    /// that can bump the version.
+    ///
+    /// Nothing reaches this today: Cargo is the only thing that serializes a
+    /// binary list, and Cargo-built binaries have nothing to carry. A build
+    /// system integration that gained archive or recording support would, and
+    /// the binaries would come back missing their leading arguments,
+    /// environment, and working directory -- so this makes that loud rather
+    /// than silent.
+    pub(crate) fn warn_if_unrepresentable(&self, binary_id: &RustBinaryId) {
+        if self.is_empty() {
+            return;
+        }
+        debug_assert!(
+            false,
+            "invocation details for `{binary_id}` cannot be serialized: \
+             nextest-metadata's summary types have no field for them"
+        );
+        warn!(
+            "invocation details for `{binary_id}` are not serialized, so a test list read \
+             back from this output will invoke it without them"
+        );
     }
 }
