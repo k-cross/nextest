@@ -924,40 +924,91 @@ impl App {
         cli_args: Vec<String>,
         output_writer: &mut OutputWriter,
     ) -> Result<()> {
+        self.exec_run_impl(
+            RunKindOpts::Test {
+                no_capture,
+                rerun,
+                runner_opts,
+                reporter_opts,
+            },
+            cli_args,
+            output_writer,
+        )
+    }
+
+    pub(crate) fn exec_bench(
+        &self,
+        runner_opts: &BenchRunnerOpts,
+        reporter_opts: &BenchReporterOpts,
+        cli_args: Vec<String>,
+        output_writer: &mut OutputWriter,
+    ) -> Result<()> {
+        self.exec_run_impl(
+            RunKindOpts::Bench {
+                runner_opts,
+                reporter_opts,
+            },
+            cli_args,
+            output_writer,
+        )
+    }
+
+    /// The shared body of [`exec_run`](Self::exec_run) and
+    /// [`exec_bench`](Self::exec_bench).
+    ///
+    /// The two commands run the same pipeline; [`RunKindOpts`] carries what
+    /// differs between them, and each divergence is a match on it.
+    fn exec_run_impl(
+        &self,
+        kind: RunKindOpts<'_>,
+        cli_args: Vec<String>,
+        output_writer: &mut OutputWriter,
+    ) -> Result<()> {
+        let mode = kind.mode();
         let pcx = ParseContext::new(self.base.graph());
-        let (version_only_config, config) = self
-            .base
-            .load_config(&pcx, &std::collections::BTreeSet::new())?;
+        let required_experimental = match kind {
+            RunKindOpts::Test { .. } => std::collections::BTreeSet::new(),
+            RunKindOpts::Bench { .. } => [ConfigExperimental::Benchmarks].into_iter().collect(),
+        };
+        let (version_only_config, config) = self.base.load_config(&pcx, &required_experimental)?;
         let profile = self.base.load_profile(&config)?;
 
         // Construct this here so that errors are reported before the build step.
         let mut structured_reporter = structured::StructuredReporter::new();
-        let message_format = reporter_opts.message_format.unwrap_or_default();
-
-        match message_format {
-            MessageFormat::Human => {}
-            MessageFormat::LibtestJson | MessageFormat::LibtestJsonPlus => {
-                // This is currently an experimental feature, and is gated on this environment
-                // variable.
-                const EXPERIMENTAL_ENV: &str = "NEXTEST_EXPERIMENTAL_LIBTEST_JSON";
-                if std::env::var(EXPERIMENTAL_ENV).as_deref() != Ok("1") {
-                    return Err(ExpectedError::ExperimentalFeatureNotEnabled {
-                        name: "libtest JSON output",
-                        var_name: EXPERIMENTAL_ENV,
-                    });
-                }
-
-                let libtest = structured::LibtestReporter::new(
-                    reporter_opts.message_format_version.as_deref(),
-                    if matches!(message_format, MessageFormat::LibtestJsonPlus) {
-                        structured::EmitNextestObject::Yes
-                    } else {
-                        structured::EmitNextestObject::No
-                    },
-                )?;
-                structured_reporter.set_libtest(libtest);
+        // TODO: support message format for benchmarks.
+        let message_format = match kind {
+            RunKindOpts::Test { reporter_opts, .. } => {
+                reporter_opts.message_format.unwrap_or_default()
             }
+            RunKindOpts::Bench { .. } => MessageFormat::Human,
         };
+
+        if let RunKindOpts::Test { reporter_opts, .. } = kind {
+            match message_format {
+                MessageFormat::Human => {}
+                MessageFormat::LibtestJson | MessageFormat::LibtestJsonPlus => {
+                    // This is currently an experimental feature, and is gated on this environment
+                    // variable.
+                    const EXPERIMENTAL_ENV: &str = "NEXTEST_EXPERIMENTAL_LIBTEST_JSON";
+                    if std::env::var(EXPERIMENTAL_ENV).as_deref() != Ok("1") {
+                        return Err(ExpectedError::ExperimentalFeatureNotEnabled {
+                            name: "libtest JSON output",
+                            var_name: EXPERIMENTAL_ENV,
+                        });
+                    }
+
+                    let libtest = structured::LibtestReporter::new(
+                        reporter_opts.message_format_version.as_deref(),
+                        if matches!(message_format, MessageFormat::LibtestJsonPlus) {
+                            structured::EmitNextestObject::Yes
+                        } else {
+                            structured::EmitNextestObject::No
+                        },
+                    )?;
+                    structured_reporter.set_libtest(libtest);
+                }
+            };
+        }
 
         // Parse test filters and emulated test binary args. This must happen
         // before computing cap_strat, since `-- --nocapture` affects capture.
@@ -968,26 +1019,36 @@ impl App {
             FiltersetKind::Test,
             &known_groups,
         )?;
-        let filter_result = self
-            .build_filter
-            .make_test_filter(NextestRunMode::Test, filter_exprs)?;
+        let filter_result = self.build_filter.make_test_filter(mode, filter_exprs)?;
         let mut test_filter = filter_result.test_filter;
 
-        // Merge no_capture from the CLI flag and the emulated `-- --nocapture`.
-        if no_capture && filter_result.no_capture {
-            return Err(ExpectedError::test_binary_args_parse_error(
-                "duplicated",
-                vec!["--no-capture".to_owned()],
-            ));
-        }
-        let no_capture = no_capture || filter_result.no_capture;
+        let no_capture = match kind {
+            RunKindOpts::Test { no_capture, .. } => {
+                // Merge no_capture from the CLI flag and the emulated `-- --nocapture`.
+                if no_capture && filter_result.no_capture {
+                    return Err(ExpectedError::test_binary_args_parse_error(
+                        "duplicated",
+                        vec!["--no-capture".to_owned()],
+                    ));
+                }
+                no_capture || filter_result.no_capture
+            }
+            // Benchmarks always run without capture.
+            RunKindOpts::Bench { .. } => true,
+        };
 
-        let cap_strat = if no_capture || runner_opts.interceptor.is_active() {
-            CaptureStrategy::None
-        } else if matches!(message_format, MessageFormat::Human) {
-            CaptureStrategy::Split
-        } else {
-            CaptureStrategy::Combined
+        let cap_strat = match kind {
+            RunKindOpts::Test { .. } => {
+                if no_capture || kind.interceptor().is_active() {
+                    CaptureStrategy::None
+                } else if matches!(message_format, MessageFormat::Human) {
+                    CaptureStrategy::Split
+                } else {
+                    CaptureStrategy::Combined
+                }
+            }
+            // TODO: maybe support capture strategy for benchmarks?
+            RunKindOpts::Bench { .. } => CaptureStrategy::None,
         };
 
         let should_colorize = self
@@ -1001,7 +1062,7 @@ impl App {
             resolve_user_config(self.base.early_args.user_config_location())?;
 
         // The -R/--rerun option requires the record experimental feature to be enabled.
-        if rerun.is_some()
+        if matches!(kind, RunKindOpts::Test { rerun: Some(_), .. })
             && !resolved_user_config.is_experimental_enabled(UserConfigExperimental::Record)
         {
             return Err(ExpectedError::ExperimentalFeatureNotEnabled {
@@ -1012,15 +1073,30 @@ impl App {
 
         // Make the runner and reporter builders. Do them now so warnings are
         // emitted before we start doing the build.
-        let runner_builder = runner_opts.to_builder(cap_strat);
-        let mut reporter_builder = reporter_opts.to_builder(
-            runner_opts.no_run,
-            no_capture || runner_opts.interceptor.is_active(),
-            should_colorize,
-            &resolved_user_config.ui,
-        );
+        let (runner_builder, mut reporter_builder) = match kind {
+            RunKindOpts::Test {
+                runner_opts,
+                reporter_opts,
+                ..
+            } => (
+                runner_opts.to_builder(cap_strat),
+                reporter_opts.to_builder(
+                    runner_opts.no_run,
+                    no_capture || runner_opts.interceptor.is_active(),
+                    should_colorize,
+                    &resolved_user_config.ui,
+                ),
+            ),
+            RunKindOpts::Bench {
+                runner_opts,
+                reporter_opts,
+            } => (
+                runner_opts.to_builder(cap_strat),
+                reporter_opts.to_builder(should_colorize, &resolved_user_config.ui),
+            ),
+        };
         reporter_builder.set_verbose(self.base.output.verbose);
-        let (rerun_state, expected_outstanding) = match rerun {
+        let (rerun_state, expected_outstanding) = match kind.rerun() {
             Some(RunIdOrRecordingSelector::RunId(selector)) => {
                 let (rerun_state, outstanding_tests) = self.resolve_rerun(selector)?;
                 let expected = outstanding_tests.expected_test_ids();
@@ -1038,12 +1114,16 @@ impl App {
 
         // Start running Cargo commands at this point, once all initial
         // validation is complete.
-        let rerun_build_scope = rerun_state
-            .as_ref()
-            .map(|s| s.root_info.build_scope_args.as_slice());
-        let binary_list = self
-            .base
-            .build_binary_list_with_rerun("test", rerun_build_scope)?;
+        let binary_list = match kind {
+            RunKindOpts::Test { .. } => {
+                let rerun_build_scope = rerun_state
+                    .as_ref()
+                    .map(|s| s.root_info.build_scope_args.as_slice());
+                self.base
+                    .build_binary_list_with_rerun("test", rerun_build_scope)?
+            }
+            RunKindOpts::Bench { .. } => self.base.build_binary_list("bench")?,
+        };
         let build_platforms = &binary_list.rust_build_meta.build_platforms.clone();
         let double_spawn = self.base.load_double_spawn();
         let target_runner = self.base.load_runner(build_platforms);
@@ -1069,23 +1149,24 @@ impl App {
             binary_list,
             &test_filter,
             &profile,
-            reporter_opts.resolved_show_progress(&resolved_user_config.ui),
+            kind.resolved_show_progress(&resolved_user_config.ui),
         )?;
 
         // Validate interceptor mode requirements.
-        if runner_opts.interceptor.is_active() {
+        let interceptor = kind.interceptor();
+        if interceptor.is_active() {
             let test_count = test_list.run_count();
 
             if test_count == 0 {
-                if let Some(debugger) = &runner_opts.interceptor.debugger {
+                if let Some(debugger) = &interceptor.debugger {
                     return Err(ExpectedError::DebuggerNoTests {
                         debugger: debugger.clone(),
-                        mode: NextestRunMode::Test,
+                        mode,
                     });
-                } else if let Some(tracer) = &runner_opts.interceptor.tracer {
+                } else if let Some(tracer) = &interceptor.tracer {
                     return Err(ExpectedError::TracerNoTests {
                         tracer: tracer.clone(),
-                        mode: NextestRunMode::Test,
+                        mode,
                     });
                 } else {
                     unreachable!("interceptor is active but neither debugger nor tracer is set");
@@ -1098,17 +1179,17 @@ impl App {
                     .map(|test| test.id().to_owned())
                     .collect();
 
-                if let Some(debugger) = &runner_opts.interceptor.debugger {
+                if let Some(debugger) = &interceptor.debugger {
                     return Err(ExpectedError::DebuggerTooManyTests {
                         debugger: debugger.clone(),
-                        mode: NextestRunMode::Test,
+                        mode,
                         test_count,
                         test_instances,
                     });
-                } else if let Some(tracer) = &runner_opts.interceptor.tracer {
+                } else if let Some(tracer) = &interceptor.tracer {
                     return Err(ExpectedError::TracerTooManyTests {
                         tracer: tracer.clone(),
-                        mode: NextestRunMode::Test,
+                        mode,
                         test_count,
                         test_instances,
                     });
@@ -1120,7 +1201,7 @@ impl App {
 
         let output = output_writer.reporter_output();
 
-        let signal_handler = if runner_opts.interceptor.debugger.is_some() {
+        let signal_handler = if interceptor.debugger.is_some() {
             // Only debuggers use special signal handling. Tracers use standard
             // handling.
             SignalHandlerKind::DebuggerMode
@@ -1128,14 +1209,13 @@ impl App {
             SignalHandlerKind::Standard
         };
 
-        let input_handler =
-            if reporter_opts.no_input_handler || runner_opts.interceptor.debugger.is_some() {
-                InputHandlerKind::Noop
-            } else if resolved_user_config.ui.input_handler {
-                InputHandlerKind::Standard
-            } else {
-                InputHandlerKind::Noop
-            };
+        let input_handler = if kind.no_input_handler() || interceptor.debugger.is_some() {
+            InputHandlerKind::Noop
+        } else if resolved_user_config.ui.input_handler {
+            InputHandlerKind::Standard
+        } else {
+            InputHandlerKind::Noop
+        };
 
         let Some(mut runner_builder) = runner_builder else {
             return Ok(());
@@ -1168,13 +1248,22 @@ impl App {
         {
             let env_vars_for_recording = capture_env_vars_for_recording();
 
-            let outstanding_tests = test_filter.into_rerun_info();
-            let rerun_info = if let Some(outstanding) = outstanding_tests {
-                let rerun_state =
-                    rerun_state.expect("rerun_state is Some iff outstanding_tests is Some");
-                Some(outstanding.into_rerun_info(rerun_state.parent_run_id, rerun_state.root_info))
-            } else {
-                None
+            let rerun_info = match kind {
+                RunKindOpts::Test { .. } => {
+                    let outstanding_tests = test_filter.into_rerun_info();
+                    if let Some(outstanding) = outstanding_tests {
+                        let rerun_state =
+                            rerun_state.expect("rerun_state is Some iff outstanding_tests is Some");
+                        Some(
+                            outstanding
+                                .into_rerun_info(rerun_state.parent_run_id, rerun_state.root_info),
+                        )
+                    } else {
+                        None
+                    }
+                }
+                // TODO: support reruns for benchmarks? value seems dubious.
+                RunKindOpts::Bench { .. } => None,
             };
 
             let config = RecordSessionConfig {
@@ -1219,14 +1308,19 @@ impl App {
         let run_stats = runner.try_execute(|event| reporter.report_event(event))?;
         let reporter_stats = reporter.finish();
 
-        let outstanding_not_seen_count = reporter_stats
-            .run_finished
-            .and_then(|rf| rf.outstanding_not_seen_count);
+        // Benchmarks don't support reruns, so their outstanding count is
+        // always None.
+        let outstanding_not_seen_count = match kind {
+            RunKindOpts::Test { .. } => reporter_stats
+                .run_finished
+                .and_then(|rf| rf.outstanding_not_seen_count),
+            RunKindOpts::Bench { .. } => None,
+        };
         let rerun_available = recording_session.is_some();
         let result = final_result(
-            NextestRunMode::Test,
+            mode,
             run_stats,
-            runner_opts.no_tests,
+            kind.no_tests(),
             outstanding_not_seen_count,
             rerun_available,
         );
@@ -1248,254 +1342,6 @@ impl App {
                 )
                 .log(&styles);
         }
-        self.base
-            .check_version_config_final(version_only_config.nextest_version())?;
-
-        result
-    }
-
-    pub(crate) fn exec_bench(
-        &self,
-        runner_opts: &BenchRunnerOpts,
-        reporter_opts: &BenchReporterOpts,
-        cli_args: Vec<String>,
-        output_writer: &mut OutputWriter,
-    ) -> Result<()> {
-        let pcx = ParseContext::new(self.base.graph());
-        let (version_only_config, config) = self.base.load_config(
-            &pcx,
-            &[ConfigExperimental::Benchmarks].into_iter().collect(),
-        )?;
-        let profile = self.base.load_profile(&config)?;
-
-        // Construct this here so that errors are reported before the build step.
-        let mut structured_reporter = structured::StructuredReporter::new();
-        // TODO: support message format for benchmarks.
-        // TODO: maybe support capture strategy for benchmarks?
-        let cap_strat = CaptureStrategy::None;
-
-        let should_colorize = self
-            .base
-            .output
-            .color
-            .should_colorize(supports_color::Stream::Stderr);
-
-        // Load and resolve user config with platform-specific overrides.
-        let resolved_user_config =
-            resolve_user_config(self.base.early_args.user_config_location())?;
-
-        // Make the runner and reporter builders. Do them now so warnings are
-        // emitted before we start doing the build.
-        let runner_builder = runner_opts.to_builder(cap_strat);
-        let mut reporter_builder =
-            reporter_opts.to_builder(should_colorize, &resolved_user_config.ui);
-        reporter_builder.set_verbose(self.base.output.verbose);
-
-        let known_groups = profile.known_groups();
-        let filter_exprs = build_filtersets(
-            &pcx,
-            &self.build_filter.filterset,
-            FiltersetKind::Test,
-            &known_groups,
-        )?;
-        // no_capture is ignored for benchmarks: they always run without capture.
-        let test_filter = self
-            .build_filter
-            .make_test_filter(NextestRunMode::Benchmark, filter_exprs)?
-            .test_filter;
-
-        let binary_list = self.base.build_binary_list("bench")?;
-        let build_platforms = &binary_list.rust_build_meta.build_platforms.clone();
-        let double_spawn = self.base.load_double_spawn();
-        let target_runner = self.base.load_runner(build_platforms);
-
-        let profile = profile.apply_build_platforms(build_platforms);
-        let run_id = force_or_new_run_id();
-        let nextest_version_config = version_only_config.nextest_version();
-        let version_env_vars = VersionEnvVars {
-            current_version: self.base.current_version.clone(),
-            required_version: nextest_version_config.required.version().cloned(),
-            recommended_version: nextest_version_config.recommended.version().cloned(),
-        };
-        let ctx = TestExecuteContext {
-            run_id,
-            version_env_vars: &version_env_vars,
-            profile_name: profile.name(),
-            double_spawn,
-            target_runner,
-        };
-
-        let test_list = self.build_test_list(
-            &ctx,
-            binary_list,
-            &test_filter,
-            &profile,
-            reporter_opts.resolved_show_progress(&resolved_user_config.ui),
-        )?;
-
-        // Validate interceptor mode requirements.
-        if runner_opts.interceptor.is_active() {
-            let test_count = test_list.run_count();
-
-            if test_count == 0 {
-                if let Some(debugger) = &runner_opts.interceptor.debugger {
-                    return Err(ExpectedError::DebuggerNoTests {
-                        debugger: debugger.clone(),
-                        mode: NextestRunMode::Benchmark,
-                    });
-                } else if let Some(tracer) = &runner_opts.interceptor.tracer {
-                    return Err(ExpectedError::TracerNoTests {
-                        tracer: tracer.clone(),
-                        mode: NextestRunMode::Benchmark,
-                    });
-                } else {
-                    unreachable!("interceptor is active but neither debugger nor tracer is set");
-                }
-            } else if test_count > 1 {
-                let test_instances: Vec<_> = test_list
-                    .iter_tests()
-                    .filter(|test| test.test_info.filter_match.is_match())
-                    .take(8)
-                    .map(|test| test.id().to_owned())
-                    .collect();
-
-                if let Some(debugger) = &runner_opts.interceptor.debugger {
-                    return Err(ExpectedError::DebuggerTooManyTests {
-                        debugger: debugger.clone(),
-                        mode: NextestRunMode::Benchmark,
-                        test_count,
-                        test_instances,
-                    });
-                } else if let Some(tracer) = &runner_opts.interceptor.tracer {
-                    return Err(ExpectedError::TracerTooManyTests {
-                        tracer: tracer.clone(),
-                        mode: NextestRunMode::Benchmark,
-                        test_count,
-                        test_instances,
-                    });
-                } else {
-                    unreachable!("interceptor is active but neither debugger nor tracer is set");
-                }
-            }
-        }
-
-        let output = output_writer.reporter_output();
-
-        let signal_handler = if runner_opts.interceptor.debugger.is_some() {
-            // Only debuggers use special signal handling. Tracers use standard
-            // handling.
-            SignalHandlerKind::DebuggerMode
-        } else {
-            SignalHandlerKind::Standard
-        };
-
-        let input_handler =
-            if reporter_opts.no_input_handler || runner_opts.interceptor.debugger.is_some() {
-                InputHandlerKind::Noop
-            } else if resolved_user_config.ui.input_handler {
-                InputHandlerKind::Standard
-            } else {
-                InputHandlerKind::Noop
-            };
-
-        let Some(runner_builder) = runner_builder else {
-            return Ok(());
-        };
-
-        // Save cli_args for recording before moving them to the runner.
-        let cli_args_for_recording = cli_args.clone();
-        let runner = runner_builder.build(
-            run_id,
-            version_env_vars,
-            &test_list,
-            &profile,
-            cli_args,
-            signal_handler,
-            input_handler,
-            double_spawn.clone(),
-            target_runner.clone(),
-        )?;
-
-        // Set up recording if the experimental feature is enabled AND recording is enabled in
-        // the config.
-        let recording_session = if resolved_user_config
-            .is_experimental_enabled(UserConfigExperimental::Record)
-            && resolved_user_config.record.enabled
-        {
-            let env_vars_for_recording = capture_env_vars_for_recording();
-            let config = RecordSessionConfig {
-                workspace_root: &self.base.workspace_root,
-                run_id: runner.run_id(),
-                nextest_version: self.base.current_version.clone(),
-                started_at: runner.started_at().fixed_offset(),
-                cli_args: cli_args_for_recording,
-                build_scope_args: self.base.build_scope_args(),
-                env_vars: env_vars_for_recording,
-                max_output_size: resolved_user_config.record.max_output_size,
-                // TODO: support reruns? value seems dubious.
-                rerun_info: None,
-            };
-            setup_recording_session(
-                config,
-                self.base.cargo_metadata_json.clone(),
-                &test_list,
-                &mut structured_reporter,
-            )
-        } else {
-            None
-        };
-
-        let show_term_progress = ShowTerminalProgress::from_cargo_configs(
-            &self.base.cargo_configs,
-            std::io::stderr().is_terminal(),
-        );
-        let mut reporter = reporter_builder.build(
-            &test_list,
-            &profile,
-            show_term_progress,
-            output,
-            structured_reporter,
-        );
-
-        // Set the run ID unique prefix for highlighting if a recording session is active.
-        if let Some(session) = &recording_session {
-            reporter.set_run_id_unique_prefix(session.run_id_unique_prefix().clone());
-        }
-
-        // TODO: no_capture is always true for benchmarks for now.
-        configure_handle_inheritance(true)?;
-        let run_stats = runner.try_execute(|event| reporter.report_event(event))?;
-        let reporter_stats = reporter.finish();
-
-        // Benchmarks don't support reruns, so outstanding_not_seen_count is
-        // always None.
-        let rerun_available = recording_session.is_some();
-        let result = final_result(
-            NextestRunMode::Benchmark,
-            run_stats,
-            runner_opts.no_tests,
-            None,
-            rerun_available,
-        );
-
-        let exit_code = result.as_ref().err().map_or(0, |e| e.process_exit_code());
-
-        if let Some(session) = recording_session {
-            let policy = RecordRetentionPolicy::from(&resolved_user_config.record);
-            let mut styles = RecordStyles::default();
-            if should_colorize {
-                styles.colorize();
-            }
-            session
-                .finalize(
-                    reporter_stats.recording_sizes,
-                    reporter_stats.run_finished,
-                    exit_code,
-                    &policy,
-                )
-                .log(&styles);
-        }
-
         self.base
             .check_version_config_final(version_only_config.nextest_version())?;
 
@@ -1596,6 +1442,66 @@ impl App {
 struct RerunState {
     parent_run_id: ReportUuid,
     root_info: RerunRootInfo,
+}
+
+/// What the run and bench commands differ in; everything else is one pipeline
+/// in [`App::exec_run_impl`].
+#[derive(Clone, Copy, Debug)]
+enum RunKindOpts<'a> {
+    Test {
+        no_capture: bool,
+        rerun: Option<&'a RunIdOrRecordingSelector>,
+        runner_opts: &'a TestRunnerOpts,
+        reporter_opts: &'a ReporterOpts,
+    },
+    Bench {
+        runner_opts: &'a BenchRunnerOpts,
+        reporter_opts: &'a BenchReporterOpts,
+    },
+}
+
+impl<'a> RunKindOpts<'a> {
+    fn mode(self) -> NextestRunMode {
+        match self {
+            Self::Test { .. } => NextestRunMode::Test,
+            Self::Bench { .. } => NextestRunMode::Benchmark,
+        }
+    }
+
+    fn rerun(self) -> Option<&'a RunIdOrRecordingSelector> {
+        match self {
+            Self::Test { rerun, .. } => rerun,
+            Self::Bench { .. } => None,
+        }
+    }
+
+    fn interceptor(self) -> &'a InterceptorOpt {
+        match self {
+            Self::Test { runner_opts, .. } => &runner_opts.interceptor,
+            Self::Bench { runner_opts, .. } => &runner_opts.interceptor,
+        }
+    }
+
+    fn no_tests(self) -> Option<NoTestsBehaviorOpt> {
+        match self {
+            Self::Test { runner_opts, .. } => runner_opts.no_tests,
+            Self::Bench { runner_opts, .. } => runner_opts.no_tests,
+        }
+    }
+
+    fn no_input_handler(self) -> bool {
+        match self {
+            Self::Test { reporter_opts, .. } => reporter_opts.no_input_handler,
+            Self::Bench { reporter_opts, .. } => reporter_opts.no_input_handler,
+        }
+    }
+
+    fn resolved_show_progress(self, resolved_ui: &UiConfig) -> ShowProgress {
+        match self {
+            Self::Test { reporter_opts, .. } => reporter_opts.resolved_show_progress(resolved_ui),
+            Self::Bench { reporter_opts, .. } => reporter_opts.resolved_show_progress(resolved_ui),
+        }
+    }
 }
 
 /// Determines the final result of a test run.
