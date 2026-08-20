@@ -93,3 +93,7 @@ Some limits follow from that:
 
 The nextest repository contains a complete, runnable Buck2 project at `buck2-nextest/example/`, with
 a README covering both this flow and how to replay a run from a captured spec file.
+
+`buck2-nextest` is also the reference implementation of nextest's
+[build system integration contract](../design/architecture/build-system-integration.md), for anyone
+looking to drive nextest from another build system.
