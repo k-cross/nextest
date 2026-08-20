@@ -13,7 +13,7 @@ use super::{
 };
 use crate::{
     ExpectedError, Result,
-    dispatch::helpers::{build_filtersets, final_stats_to_error, resolve_user_config},
+    dispatch::helpers::{build_filtersets, resolve_user_config},
     output::OutputWriter,
     reuse_build::ReuseBuildOpts,
 };
@@ -27,7 +27,7 @@ use nextest_runner::{
         elements::{MaxFail, RetryPolicy, TestThreads},
     },
     errors::DisplayErrorChain,
-    helpers::{ShowTerminalProgress, ThemeCharacters, force_or_new_run_id, plural},
+    helpers::{ShowTerminalProgress, ThemeCharacters, force_or_new_run_id},
     input::InputHandlerKind,
     list::{BinaryList, ListProgressOptions, TestExecuteContext, TestList},
     record::{
@@ -36,24 +36,24 @@ use nextest_runner::{
         RunStore, STORE_FORMAT_VERSION, Styles as RecordStyles, records_state_dir,
     },
     redact::Redactor,
-    reporter::{
-        MaxProgressRunning, ReporterBuilder, ShowProgress, TestOutputDisplay,
-        events::{FinalRunStats, RunStats},
-        structured,
-    },
+    reporter::{MaxProgressRunning, ReporterBuilder, ShowProgress, TestOutputDisplay, structured},
     run_mode::NextestRunMode,
     runner::{
         DebuggerCommand, Interceptor, StressCondition, StressCount, TestRunnerBuilder,
-        TracerCommand, VersionEnvVars, configure_handle_inheritance,
+        TracerCommand, VersionEnvVars,
     },
     signal::SignalHandlerKind,
     test_filter::TestFilter,
     test_output::CaptureStrategy,
     user_config::{UserConfigExperimental, elements::UiConfig},
 };
+use nextest_session::{
+    NoTestsBehavior, RunFailure, SessionContext, TestSession, errors::ExecuteError,
+    evaluate_profile, final_outcome, into_report_errors, run_to_completion,
+};
 use quick_junit::ReportUuid;
-use std::{collections::BTreeMap, io::IsTerminal, sync::Arc, time::Duration};
-use tracing::{debug, info, warn};
+use std::{collections::BTreeMap, convert::Infallible, io::IsTerminal, sync::Arc, time::Duration};
+use tracing::{debug, warn};
 
 /// Options for the run command.
 #[derive(Debug, Args)]
@@ -898,6 +898,29 @@ impl App {
         )
     }
 
+    fn build_test_session<'a>(
+        &'a self,
+        ctx: &'a SessionContext,
+        profile: &'a nextest_runner::config::core::EvaluatableProfile<'a>,
+        binary_list: Arc<BinaryList>,
+        test_filter: &TestFilter,
+        show_progress: ShowProgress,
+    ) -> Result<TestSession<'a>> {
+        let env = EnvironmentMap::new(&self.base.cargo_configs);
+        self.build_filter.compute_test_session(
+            ctx,
+            profile,
+            self.base.graph(),
+            self.base.packages(),
+            self.base.workspace_root.clone(),
+            binary_list,
+            test_filter,
+            env,
+            &self.base.reuse_build,
+            self.list_progress_options(show_progress),
+        )
+    }
+
     fn list_progress_options(&self, show_progress: ShowProgress) -> ListProgressOptions {
         let is_terminal = std::io::stderr().is_terminal();
         let show_terminal_progress =
@@ -1128,29 +1151,32 @@ impl App {
         let double_spawn = self.base.load_double_spawn();
         let target_runner = self.base.load_runner(build_platforms);
 
-        let profile = profile.apply_build_platforms(build_platforms);
-        let run_id = force_or_new_run_id();
+        let profile = evaluate_profile(profile, build_platforms).map_err(|error| {
+            ExpectedError::StoreDirCreateError {
+                store_dir: error.store_dir,
+                err: error.error,
+            }
+        })?;
         let nextest_version_config = version_only_config.nextest_version();
-        let version_env_vars = VersionEnvVars {
-            current_version: self.base.current_version.clone(),
-            required_version: nextest_version_config.required.version().cloned(),
-            recommended_version: nextest_version_config.recommended.version().cloned(),
-        };
-        let ctx = TestExecuteContext {
-            run_id,
-            version_env_vars: &version_env_vars,
-            profile_name: profile.name(),
-            double_spawn,
-            target_runner,
+        let ctx = SessionContext {
+            run_id: force_or_new_run_id(),
+            version_env_vars: VersionEnvVars {
+                current_version: self.base.current_version.clone(),
+                required_version: nextest_version_config.required.version().cloned(),
+                recommended_version: nextest_version_config.recommended.version().cloned(),
+            },
+            double_spawn: double_spawn.clone(),
+            target_runner: target_runner.clone(),
         };
 
-        let test_list = self.build_test_list(
+        let session = self.build_test_session(
             &ctx,
+            &profile,
             binary_list,
             &test_filter,
-            &profile,
             kind.resolved_show_progress(&resolved_user_config.ui),
         )?;
+        let test_list = session.test_list();
 
         // Validate interceptor mode requirements.
         let interceptor = kind.interceptor();
@@ -1228,17 +1254,8 @@ impl App {
 
         // Save cli_args for recording before moving them to the runner.
         let cli_args_for_recording = cli_args.clone();
-        let runner = runner_builder.build(
-            run_id,
-            version_env_vars,
-            &test_list,
-            &profile,
-            cli_args,
-            signal_handler,
-            input_handler,
-            double_spawn.clone(),
-            target_runner.clone(),
-        )?;
+        let runner =
+            session.build_runner(runner_builder, cli_args, signal_handler, input_handler)?;
 
         // Set up recording if the experimental feature is enabled (via env var or user config)
         // AND recording is enabled in the config.
@@ -1280,7 +1297,7 @@ impl App {
             setup_recording_session(
                 config,
                 self.base.cargo_metadata_json.clone(),
-                &test_list,
+                test_list,
                 &mut structured_reporter,
             )
         } else {
@@ -1292,7 +1309,7 @@ impl App {
             std::io::stderr().is_terminal(),
         );
         let mut reporter = reporter_builder.build(
-            &test_list,
+            test_list,
             &profile,
             show_term_progress,
             output,
@@ -1304,9 +1321,13 @@ impl App {
             reporter.set_run_id_unique_prefix(session.run_id_unique_prefix().clone());
         }
 
-        configure_handle_inheritance(no_capture)?;
-        let run_stats = runner.try_execute(|event| reporter.report_event(event))?;
-        let reporter_stats = reporter.finish();
+        let executed = run_to_completion(runner, reporter, no_capture, |_| Ok::<_, Infallible>(()))
+            .map_err(|error| match error {
+                ExecuteError::ConfigureHandleInheritance(err) => ExpectedError::from(err),
+                ExecuteError::Execute(errors) => ExpectedError::from(into_report_errors(errors)),
+            })?;
+        let run_stats = executed.run_stats;
+        let reporter_stats = executed.reporter_stats;
 
         // Benchmarks don't support reruns, so their outstanding count is
         // always None.
@@ -1317,13 +1338,14 @@ impl App {
             RunKindOpts::Bench { .. } => None,
         };
         let rerun_available = recording_session.is_some();
-        let result = final_result(
+        let result = final_outcome(
             mode,
             run_stats,
-            kind.no_tests(),
+            kind.no_tests().map(NoTestsBehavior::from),
             outstanding_not_seen_count,
             rerun_available,
-        );
+        )
+        .map_err(run_failure_to_error);
 
         let exit_code = result.as_ref().err().map_or(0, |e| e.process_exit_code());
 
@@ -1504,300 +1526,23 @@ impl<'a> RunKindOpts<'a> {
     }
 }
 
-/// Determines the final result of a test run.
-fn final_result(
-    mode: NextestRunMode,
-    run_stats: RunStats,
-    no_tests: Option<NoTestsBehaviorOpt>,
-    outstanding_not_seen_count: Option<usize>,
-    rerun_available: bool,
-) -> Result<(), ExpectedError> {
-    let final_stats = run_stats.summarize_final();
-    let is_rerun = outstanding_not_seen_count.is_some();
-
-    // Handle no-tests-run case first.
-    if matches!(final_stats, FinalRunStats::NoTestsRun) {
-        match no_tests {
-            Some(NoTestsBehaviorOpt::Pass) => return Ok(()),
-            Some(NoTestsBehaviorOpt::Warn) => {
-                warn!("no {} to run", plural::tests_plural(mode));
-                return Ok(());
-            }
-            Some(NoTestsBehaviorOpt::Fail) => {
-                return Err(ExpectedError::NoTestsRun {
-                    mode,
-                    is_default: false,
-                });
-            }
-            // For reruns, Auto/None checks outstanding tests below.
-            // For non-reruns, Auto/None should fail.
-            Some(NoTestsBehaviorOpt::Auto) => {
-                if !is_rerun {
-                    return Err(ExpectedError::NoTestsRun {
-                        mode,
-                        is_default: false,
-                    });
-                }
-                // is_rerun: fall through to outstanding check
-            }
-            None => {
-                if !is_rerun {
-                    return Err(ExpectedError::NoTestsRun {
-                        mode,
-                        is_default: true,
-                    });
-                }
-                // is_rerun: fall through to outstanding check
-            }
+/// Maps a shared [`RunFailure`] onto this crate's error type, which carries
+/// the message and exit code.
+fn run_failure_to_error(failure: RunFailure) -> ExpectedError {
+    match failure {
+        RunFailure::NoTestsRun { mode, is_default } => {
+            ExpectedError::NoTestsRun { mode, is_default }
         }
-    } else {
-        // Tests ran. Check if the run failed.
-        if let Some(err) = final_stats_to_error(final_stats, mode, rerun_available) {
-            return Err(err);
+        RunFailure::SetupScriptFailed => ExpectedError::setup_script_failed(),
+        RunFailure::TestRunFailed { rerun_available } => {
+            ExpectedError::test_run_failed(rerun_available)
         }
-    }
-
-    // Run succeeded (or no tests ran on a rerun). Check for outstanding tests.
-    match outstanding_not_seen_count {
-        Some(0) => {
-            info!("no outstanding tests remain");
-            Ok(())
-        }
-        Some(count) => Err(ExpectedError::RerunTestsOutstanding {
+        RunFailure::RerunTestsOutstanding {
             count,
             rerun_available,
-        }),
-        None => Ok(()),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use nextest_runner::reporter::events::RunStats;
-
-    fn make_run_stats(initial_run_count: usize, finished_count: usize, passed: usize) -> RunStats {
-        RunStats {
-            initial_run_count,
-            finished_count,
-            passed,
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn test_final_result() {
-        // --no-tests=pass always succeeds.
-        let stats = make_run_stats(0, 0, 0);
-        let result = final_result(
-            NextestRunMode::Test,
-            stats,
-            Some(NoTestsBehaviorOpt::Pass),
-            None,
-            false,
-        );
-        assert!(result.is_ok(), "--no-tests=pass should succeed");
-
-        // --no-tests=warn succeeds (with a warning).
-        let stats = make_run_stats(0, 0, 0);
-        let result = final_result(
-            NextestRunMode::Test,
-            stats,
-            Some(NoTestsBehaviorOpt::Warn),
-            None,
-            false,
-        );
-        assert!(result.is_ok(), "--no-tests=warn should succeed");
-
-        // --no-tests=fail fails.
-        let stats = make_run_stats(0, 0, 0);
-        let result = final_result(
-            NextestRunMode::Test,
-            stats,
-            Some(NoTestsBehaviorOpt::Fail),
-            None,
-            false,
-        );
-        assert!(
-            matches!(
-                result,
-                Err(ExpectedError::NoTestsRun {
-                    is_default: false,
-                    ..
-                })
-            ),
-            "--no-tests=fail should fail"
-        );
-
-        // --no-tests=auto (not a rerun) fails.
-        let stats = make_run_stats(0, 0, 0);
-        let result = final_result(
-            NextestRunMode::Test,
-            stats,
-            Some(NoTestsBehaviorOpt::Auto),
-            None,
-            false,
-        );
-        assert!(
-            matches!(
-                result,
-                Err(ExpectedError::NoTestsRun {
-                    is_default: false,
-                    ..
-                })
-            ),
-            "--no-tests=auto (not rerun) should fail"
-        );
-
-        // --no-tests=auto (rerun with outstanding) returns RerunTestsOutstanding.
-        let stats = make_run_stats(0, 0, 0);
-        let result = final_result(
-            NextestRunMode::Test,
-            stats,
-            Some(NoTestsBehaviorOpt::Auto),
-            Some(5),
-            false,
-        );
-        assert!(
-            matches!(
-                result,
-                Err(ExpectedError::RerunTestsOutstanding {
-                    count: 5,
-                    rerun_available: false,
-                })
-            ),
-            "--no-tests=auto (rerun with outstanding) should return RerunTestsOutstanding"
-        );
-
-        // --no-tests=auto (rerun with no outstanding) succeeds.
-        let stats = make_run_stats(0, 0, 0);
-        let result = final_result(
-            NextestRunMode::Test,
-            stats,
-            Some(NoTestsBehaviorOpt::Auto),
-            Some(0),
-            false,
-        );
-        assert!(
-            result.is_ok(),
-            "--no-tests=auto (rerun, no outstanding) should succeed"
-        );
-
-        // Default (not a rerun) fails with is_default: true.
-        let stats = make_run_stats(0, 0, 0);
-        let result = final_result(NextestRunMode::Test, stats, None, None, false);
-        assert!(
-            matches!(
-                result,
-                Err(ExpectedError::NoTestsRun {
-                    is_default: true,
-                    ..
-                })
-            ),
-            "default (not rerun) should fail with is_default: true"
-        );
-
-        // Default (rerun with outstanding) returns RerunTestsOutstanding.
-        let stats = make_run_stats(0, 0, 0);
-        let result = final_result(NextestRunMode::Test, stats, None, Some(3), false);
-        assert!(
-            matches!(
-                result,
-                Err(ExpectedError::RerunTestsOutstanding {
-                    count: 3,
-                    rerun_available: false,
-                })
-            ),
-            "default (rerun with outstanding) should return RerunTestsOutstanding"
-        );
-
-        // Not a rerun: succeeds.
-        let stats = make_run_stats(5, 5, 5);
-        let result = final_result(NextestRunMode::Test, stats, None, None, false);
-        assert!(
-            result.is_ok(),
-            "all tests passed (not rerun) should succeed"
-        );
-
-        // Rerun with no outstanding: succeeds.
-        let stats = make_run_stats(5, 5, 5);
-        let result = final_result(NextestRunMode::Test, stats, None, Some(0), false);
-        assert!(
-            result.is_ok(),
-            "all tests passed (rerun, no outstanding) should succeed"
-        );
-
-        // Rerun with outstanding: returns RerunTestsOutstanding.
-        let stats = make_run_stats(5, 5, 5);
-        let result = final_result(NextestRunMode::Test, stats, None, Some(2), false);
-        assert!(
-            matches!(
-                result,
-                Err(ExpectedError::RerunTestsOutstanding {
-                    count: 2,
-                    rerun_available: false,
-                })
-            ),
-            "all tests passed (rerun with outstanding) should return RerunTestsOutstanding \
-             with rerun_available: false"
-        );
-
-        // Rerun with outstanding, and this run was recorded. We can show the
-        // continue rerunning hint in this case.
-        let stats = make_run_stats(5, 5, 5);
-        let result = final_result(NextestRunMode::Test, stats, None, Some(2), true);
-        assert!(
-            matches!(
-                result,
-                Err(ExpectedError::RerunTestsOutstanding {
-                    count: 2,
-                    rerun_available: true
-                })
-            ),
-            "all tests passed (recorded rerun with outstanding) should return \
-             RerunTestsOutstanding with rerun_available: true"
-        );
-
-        // Failures return TestRunFailed (no rerun available).
-        let mut stats = make_run_stats(5, 5, 3);
-        stats.failed = 2;
-        let result = final_result(NextestRunMode::Test, stats, None, None, false);
-        assert!(
-            matches!(
-                result,
-                Err(ExpectedError::TestRunFailed {
-                    rerun_available: false
-                })
-            ),
-            "test failures should return TestRunFailed"
-        );
-
-        // Failures return TestRunFailed (rerun available).
-        let mut stats = make_run_stats(5, 5, 3);
-        stats.failed = 2;
-        let result = final_result(NextestRunMode::Test, stats, None, None, true);
-        assert!(
-            matches!(
-                result,
-                Err(ExpectedError::TestRunFailed {
-                    rerun_available: true
-                })
-            ),
-            "test failures with rerun available should return TestRunFailed with rerun_available: true"
-        );
-
-        // Failures take precedence over outstanding tests.
-        let mut stats = make_run_stats(5, 5, 3);
-        stats.failed = 2;
-        let result = final_result(NextestRunMode::Test, stats, None, Some(10), false);
-        assert!(
-            matches!(
-                result,
-                Err(ExpectedError::TestRunFailed {
-                    rerun_available: false
-                })
-            ),
-            "test failures should take precedence over outstanding tests"
-        );
+        } => ExpectedError::RerunTestsOutstanding {
+            count,
+            rerun_available,
+        },
     }
 }
