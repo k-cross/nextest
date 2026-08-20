@@ -9,18 +9,13 @@ use crate::{
     output::{OutputContext, StderrStyles},
 };
 use camino::{Utf8Path, Utf8PathBuf};
-use itertools::Itertools;
 use nextest_filtering::{Filterset, FiltersetKind, KnownGroups, ParseContext};
 use nextest_runner::{
     RustcCli,
     cargo_config::{CargoConfigs, TargetTriple},
     errors::TargetTripleError,
     platform::{BuildPlatforms, HostPlatform, Platform, PlatformLibdir, TargetPlatform},
-    reporter::{
-        TestOutputErrorSlice,
-        events::{FinalRunStats, RunStatsFailureKind},
-    },
-    run_mode::NextestRunMode,
+    reporter::TestOutputErrorSlice,
     target_runner::{PlatformRunner, TargetRunner},
     user_config::{UserConfig, UserConfigLocation},
 };
@@ -172,16 +167,8 @@ pub(super) fn build_filtersets(
     kind: FiltersetKind,
     known_groups: &KnownGroups,
 ) -> Result<Vec<Filterset>> {
-    let (exprs, all_errors): (Vec<_>, Vec<_>) = filter_set
-        .iter()
-        .map(|input| Filterset::parse(input.clone(), pcx, kind, known_groups))
-        .partition_result();
-
-    if !all_errors.is_empty() {
-        Err(ExpectedError::filter_expression_parse_error(all_errors))
-    } else {
-        Ok(exprs)
-    }
+    nextest_session::parse_filtersets(pcx, filter_set, kind, known_groups)
+        .map_err(ExpectedError::filter_expression_parse_error)
 }
 
 pub(super) fn extract_slice_from_output<'a>(
@@ -265,37 +252,4 @@ pub(super) fn locate_workspace_root(
         .ok_or_else(|| ExpectedError::WorkspaceRootInvalid {
             workspace_root: workspace_root.to_owned(),
         })
-}
-
-/// Converts final run statistics to an error, if the run failed.
-///
-/// Returns `None` if the run was successful. For `NoTestsRun`, always returns
-/// an error with `is_default: true`; callers that want custom `NoTestsBehavior`
-/// handling should check for that case separately.
-pub(super) fn final_stats_to_error(
-    stats: FinalRunStats,
-    mode: NextestRunMode,
-    rerun_available: bool,
-) -> Option<ExpectedError> {
-    match stats {
-        FinalRunStats::Success => None,
-        FinalRunStats::NoTestsRun => Some(ExpectedError::NoTestsRun {
-            mode,
-            is_default: true,
-        }),
-        FinalRunStats::Cancelled {
-            kind: RunStatsFailureKind::SetupScript,
-            ..
-        }
-        | FinalRunStats::Failed {
-            kind: RunStatsFailureKind::SetupScript,
-        } => Some(ExpectedError::setup_script_failed()),
-        FinalRunStats::Cancelled {
-            kind: RunStatsFailureKind::Test { .. },
-            ..
-        }
-        | FinalRunStats::Failed {
-            kind: RunStatsFailureKind::Test { .. },
-        } => Some(ExpectedError::test_run_failed(rerun_available)),
-    }
 }
