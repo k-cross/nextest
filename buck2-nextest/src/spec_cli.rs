@@ -16,9 +16,10 @@
 //! Everything past building a [`RunContext`] is shared with the gRPC path.
 
 use crate::{
-    cli::{FilterOpts, absolute_project_root},
+    cli::FilterOpts,
     convert::to_binary_list,
     errors::{ExpectedError, Result},
+    project_root::absolute_project_root,
     run::RunContext,
     spec::read_spec,
 };

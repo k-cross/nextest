@@ -35,9 +35,10 @@ use super::{
     transport::{Socket, SocketSpec, serve_test_executor},
 };
 use crate::{
-    cli::{FilterOpts, absolute_project_root},
+    cli::FilterOpts,
     convert::to_binary_list,
     errors::{ExpectedError, Result},
+    project_root::{absolute_project_root, find_project_root},
     proto::{
         ConfiguredTargetHandle, EndOfTestResultsRequest, test_executor_server::TestExecutorServer,
         test_orchestrator_client::TestOrchestratorClient,
@@ -302,11 +303,16 @@ fn run(runtime: &Runtime, prepared: Prepared, options: ExecutorOptions) -> Resul
     }
 
     // What Buck2 implied, unless the command line said otherwise. With no
-    // targets at all there is nothing to imply it and nothing that depends on
-    // it, so the process's own directory stands in.
+    // targets at all -- `buck2 test //:some-library` selects none -- there is
+    // nothing to imply it, but configuration is still read from under the root,
+    // so fall back to Buck2's own markers. The executor's working directory is
+    // Buck2's output directory inside the project, so the root is above it.
     let project_root = match options.project_root.or(project_root) {
         Some(root) => root,
-        None => absolute_project_root(Utf8Path::new("."))?,
+        None => {
+            let cwd = absolute_project_root(Utf8Path::new("."))?;
+            find_project_root(&cwd).unwrap_or(cwd)
+        }
     };
 
     let build_platforms = BuildPlatforms::new_with_no_target().map_err(|error| {

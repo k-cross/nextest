@@ -14,6 +14,7 @@ pub mod cli;
 pub mod convert;
 pub mod errors;
 pub mod executor;
+pub mod project_root;
 pub mod proto;
 pub mod run;
 pub mod spec;
