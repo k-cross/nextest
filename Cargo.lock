@@ -499,6 +499,7 @@ dependencies = [
  "nextest-filtering",
  "nextest-metadata",
  "nextest-runner",
+ "nextest-session",
  "nextest-workspace-hack",
  "owo-colors",
  "pathdiff",

@@ -516,15 +516,14 @@ impl BaseApp {
         let profile = config
             .profile(profile_name)
             .map_err(ExpectedError::profile_not_found)?;
-        if profile.has_junit() {
-            let store_dir = profile.store_dir();
-            std::fs::create_dir_all(store_dir).map_err(|err| {
-                ExpectedError::StoreDirCreateError {
-                    store_dir: store_dir.to_owned(),
-                    err,
-                }
-            })?;
-        }
+        // Surface a store directory failure here, before the build step; the
+        // profile evaluation later in the pipeline repeats this idempotently.
+        nextest_session::create_junit_store_dir(&profile).map_err(|error| {
+            ExpectedError::StoreDirCreateError {
+                store_dir: error.store_dir,
+                err: error.error,
+            }
+        })?;
         Ok(profile)
     }
 }
