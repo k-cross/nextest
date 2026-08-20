@@ -13,6 +13,7 @@ use nextest_filtering::{Filterset, FiltersetKind, KnownGroups, ParseContext};
 use nextest_runner::{
     RustcCli,
     cargo_config::{CargoConfigs, TargetTriple},
+    config::core::{EarlyProfile, EvaluatableProfile},
     errors::TargetTripleError,
     platform::{BuildPlatforms, HostPlatform, Platform, PlatformLibdir, TargetPlatform},
     reporter::TestOutputErrorSlice,
@@ -169,6 +170,20 @@ pub(super) fn build_filtersets(
 ) -> Result<Vec<Filterset>> {
     nextest_session::parse_filtersets(pcx, filter_set, kind, known_groups)
         .map_err(ExpectedError::filter_expression_parse_error)
+}
+
+/// Evaluates a profile against build platforms, creating its store directory
+/// if the profile writes a JUnit report.
+pub(super) fn evaluate_profile<'cfg>(
+    profile: EarlyProfile<'cfg>,
+    build_platforms: &BuildPlatforms,
+) -> Result<EvaluatableProfile<'cfg>> {
+    nextest_session::evaluate_profile(profile, build_platforms).map_err(|error| {
+        ExpectedError::StoreDirCreateError {
+            store_dir: error.store_dir,
+            err: error.error,
+        }
+    })
 }
 
 pub(super) fn extract_slice_from_output<'a>(

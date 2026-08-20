@@ -12,10 +12,7 @@ use iddqd::IdOrdMap;
 use nextest_runner::{
     cargo_config::EnvironmentMap,
     config::core::{EvaluatableProfile, get_num_cpus},
-    list::{
-        BinaryList, ListProgressOptions, PackageInfo, RustTestArtifact, TestExecuteContext,
-        TestList,
-    },
+    list::{BinaryList, ListProgressOptions, PackageInfo},
     partition::PartitionerBuilder,
     reuse_build::ReuseBuildInfo,
     run_mode::NextestRunMode,
@@ -100,64 +97,6 @@ pub(crate) struct TestBuildFilter {
 }
 
 impl TestBuildFilter {
-    #[expect(clippy::too_many_arguments)]
-    pub(crate) fn compute_test_list<'g>(
-        &self,
-        ctx: &TestExecuteContext<'_>,
-        graph: &'g PackageGraph,
-        packages: &'g IdOrdMap<PackageInfo>,
-        workspace_root: Utf8PathBuf,
-        binary_list: Arc<BinaryList>,
-        test_filter: &TestFilter,
-        env: EnvironmentMap,
-        profile: &EvaluatableProfile<'_>,
-        reuse_build: &ReuseBuildInfo,
-        list_progress_options: ListProgressOptions,
-    ) -> Result<TestList<'g>> {
-        let path_mapper = make_path_mapper(
-            reuse_build,
-            graph,
-            &binary_list.rust_build_meta.target_directory,
-            &binary_list.rust_build_meta.build_directory,
-        )?;
-
-        // Use the canonicalized workspace root from PathMapper if a remap
-        // was specified. This ensures NEXTEST_WORKSPACE_ROOT is an absolute,
-        // normalized path consistent with CARGO_MANIFEST_DIR.
-        let workspace_root = match path_mapper.new_workspace_root() {
-            Some(canonical) => canonical.to_owned(),
-            None => workspace_root,
-        };
-
-        let rust_build_meta = binary_list.rust_build_meta.map_paths(&path_mapper);
-        let test_artifacts = RustTestArtifact::from_binary_list(
-            packages,
-            binary_list,
-            &rust_build_meta,
-            &path_mapper,
-            self.platform_filter.into(),
-        )?;
-        TestList::new(
-            ctx,
-            test_artifacts,
-            rust_build_meta,
-            test_filter,
-            self.partition.as_ref(),
-            workspace_root,
-            env,
-            profile,
-            if self.ignore_default_filter {
-                FilterBound::All
-            } else {
-                FilterBound::DefaultSet
-            },
-            // TODO: do we need to allow customizing this?
-            get_num_cpus(),
-            list_progress_options,
-        )
-        .map_err(|err| ExpectedError::CreateTestListError { err })
-    }
-
     #[expect(clippy::too_many_arguments)]
     pub(crate) fn compute_test_session<'g>(
         &self,
