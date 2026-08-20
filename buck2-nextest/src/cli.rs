@@ -6,8 +6,9 @@
 use crate::{
     errors::{ExpectedError, Result},
     executor::{self, ExecutorOptions, SocketSpec},
+    project_root::absolute_project_root,
 };
-use camino::{Utf8Path, Utf8PathBuf};
+use camino::Utf8PathBuf;
 use clap::{Args, Parser, ValueEnum};
 use nextest_runner::{
     test_filter::{FilterBound, RunIgnored},
@@ -210,30 +211,6 @@ impl FilterOpts {
         self.list_threads
             .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, |n| n.get()))
     }
-}
-
-/// Makes a project root absolute, so that everything derived from it is too.
-///
-/// Nextest passes the project root to each test process as
-/// `NEXTEST_WORKSPACE_ROOT`, and the directory the test runs in as
-/// `CARGO_MANIFEST_DIR`. A test resolves neither against the project: it runs
-/// somewhere within it, so a relative root -- such as a bare `.` -- would name
-/// wherever the test happens to be instead. `cargo-nextest` guarantees both are
-/// absolute, and so does this.
-///
-/// Symlinks are deliberately left alone: a project root is stated rather than
-/// discovered, and resolving one would leave these paths naming a place that
-/// whoever stated it did not.
-pub(crate) fn absolute_project_root(path: &Utf8Path) -> Result<Utf8PathBuf> {
-    let absolute =
-        std::path::absolute(path).map_err(|error| ExpectedError::ProjectRootAbsoluteError {
-            path: path.to_owned(),
-            error,
-        })?;
-    Utf8PathBuf::try_from(absolute).map_err(|error| ExpectedError::ProjectRootNonUtf8 {
-        path: path.to_owned(),
-        error,
-    })
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]

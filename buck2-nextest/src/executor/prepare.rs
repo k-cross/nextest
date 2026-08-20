@@ -16,6 +16,7 @@
 
 use crate::{
     errors::{ExpectedError, Result},
+    project_root::root_marker,
     proto::{
         ArgValue, ArgValueContent, ConfiguredTargetHandle, EnvironmentVariable, ExternalRunnerSpec,
         PrepareForLocalExecutionRequest, TestExecutable, TestStage, arg_value_content,
@@ -183,9 +184,10 @@ async fn prepare_one(
 /// working directory, which is Buck2's output directory rather than the project.
 ///
 /// A project root that happens to end with the same names as one of its own
-/// package paths has them removed when it should not be. Every target is asked
-/// and a disagreement is reported rather than acted on, which catches that
-/// whenever another target implies the true root.
+/// package paths would have them removed when it should not be. Buck2's own
+/// root markers settle that: see [`choose_root`]. A disagreement between
+/// targets is reported rather than acted on, which catches whatever the markers
+/// do not.
 ///
 /// Returns `None` for a working directory that is not absolute, since a root
 /// derived from one would be no better than the relative path it came from.
@@ -209,7 +211,26 @@ fn project_root_from(cwd: &Utf8Path, package_path: &str) -> Option<Utf8PathBuf> 
         }
     }
 
-    Some(root)
+    Some(choose_root(root, cwd))
+}
+
+/// Decides between the root stripping implied and the working directory it was
+/// stripped from.
+///
+/// Stripping is only a guess: a project rooted at `/work/app` whose targets sit
+/// in a package named `app` implies `/work`, which is one directory too high.
+/// Whichever of the two carries the stronger Buck2 marker is the answer, and
+/// the implied root stands when neither says anything.
+///
+/// The ordering matters in both directions. A cell nested at the working
+/// directory does not outrank a `.buckroot` above it, and an unmarked working
+/// directory never displaces a marked root.
+fn choose_root(implied: Utf8PathBuf, cwd: &Utf8Path) -> Utf8PathBuf {
+    if root_marker(cwd) > root_marker(&implied) {
+        cwd.to_owned()
+    } else {
+        implied
+    }
 }
 
 /// Wraps a spec value as an argument, leaving handles for Buck2 to resolve.
@@ -225,6 +246,7 @@ fn spec_arg(value: crate::proto::ExternalRunnerSpecValue) -> ArgValue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use camino_tempfile::Utf8TempDir;
     use test_case::test_case;
 
     /// A target that runs from the project root, which is what the prelude's
@@ -274,5 +296,57 @@ mod tests {
     fn a_relative_working_directory_implies_nothing() {
         assert_eq!(project_root_from(Utf8Path::new("project"), "sub"), None);
         assert_eq!(project_root_from(Utf8Path::new("."), ""), None);
+    }
+
+    /// A project root whose own directory name matches the package path would
+    /// otherwise be stripped one level too high. Buck2's marker settles it, and
+    /// no other target has to disagree for that to work.
+    #[test]
+    fn a_marked_working_directory_outranks_the_implied_root() {
+        let temp = Utf8TempDir::new().expect("a temporary directory");
+        // The project is rooted at `<temp>/app`, and its targets live in a
+        // package that is also called `app`.
+        let root = temp.path().join("app");
+        std::fs::create_dir_all(&root).expect("the directory is created");
+        std::fs::write(root.join(".buckroot"), "").expect("the marker is written");
+
+        assert_eq!(
+            project_root_from(&root, "app").as_deref(),
+            Some(root.as_path()),
+            "the marked working directory is the root, not its parent"
+        );
+    }
+
+    /// The mirror image: a genuine package directory below a marked root keeps
+    /// being stripped, since the root outranks it.
+    #[test]
+    fn a_marked_root_is_not_displaced_by_its_package() {
+        let temp = Utf8TempDir::new().expect("a temporary directory");
+        let root = temp.path().join("project");
+        let package = root.join("sub");
+        std::fs::create_dir_all(&package).expect("the directory is created");
+        std::fs::write(root.join(".buckroot"), "").expect("the marker is written");
+
+        assert_eq!(
+            project_root_from(&package, "sub").as_deref(),
+            Some(root.as_path())
+        );
+    }
+
+    /// A cell nested at the working directory is a weaker claim than the
+    /// project marker above it.
+    #[test]
+    fn a_nested_cell_does_not_outrank_the_project_root() {
+        let temp = Utf8TempDir::new().expect("a temporary directory");
+        let root = temp.path().join("project");
+        let cell = root.join("sub");
+        std::fs::create_dir_all(&cell).expect("the directory is created");
+        std::fs::write(root.join(".buckroot"), "").expect("the root marker is written");
+        std::fs::write(cell.join(".buckconfig"), "").expect("the cell marker is written");
+
+        assert_eq!(
+            project_root_from(&cell, "sub").as_deref(),
+            Some(root.as_path())
+        );
     }
 }
