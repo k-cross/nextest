@@ -16,7 +16,9 @@
 //! problem for on-disk recordings.
 //!
 //! The channel is bounded, so a Buck2 that stops reading applies backpressure
-//! rather than letting results pile up without limit.
+//! rather than letting results pile up without limit. That backpressure is
+//! itself bounded: see `ResultSink::wait_to_send` for why the callback gives up
+//! on a Buck2 that never catches up rather than waiting on it forever.
 
 use crate::{
     errors::ExpectedError,
@@ -34,7 +36,7 @@ use std::{
     collections::HashMap,
     sync::mpsc::{self, SyncSender, TrySendError},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::runtime::Handle;
 use tonic::transport::Channel;
@@ -44,6 +46,15 @@ use tonic::transport::Channel;
 /// Large enough that a normal run never blocks on it, small enough that a
 /// wedged Buck2 is noticed rather than absorbed.
 const CHANNEL_DEPTH: usize = 128;
+
+/// How long the callback waits for Buck2 to catch up before giving up on it.
+///
+/// Generous, since exceeding it abandons a run that might still be healthy, and
+/// only a Buck2 that has stopped reading results altogether gets this far.
+const SEND_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// How often to look for room while the channel is full.
+const SEND_RETRY_INTERVAL: Duration = Duration::from_millis(10);
 
 /// One finished test, owned so it can outlive the borrowed event it came from.
 #[derive(Clone, Debug)]
@@ -155,9 +166,10 @@ impl ResultSink {
 
         match self.sender.try_send(finished) {
             Ok(()) => Ok(()),
-            // A full channel means Buck2 is slow, not gone: wait for it.
+            // A full channel usually means Buck2 is slow rather than gone, so
+            // it is worth waiting for -- but only so long. See `wait_to_send`.
             Err(TrySendError::Full(finished)) => {
-                self.sender.send(finished).map_err(|_| SinkDisconnected)
+                wait_to_send(&self.sender, finished, SEND_TIMEOUT, SEND_RETRY_INTERVAL)
             }
             Err(TrySendError::Disconnected(_)) => Err(SinkDisconnected),
         }
@@ -186,6 +198,37 @@ impl ResultSink {
 /// The reporting thread is gone, so no further results can be delivered.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct SinkDisconnected;
+
+/// Waits a bounded time for room in a full channel.
+///
+/// This runs on one of the runner's threads, so waiting here stops the run from
+/// making progress: no test starts or finishes, no timeout fires, and `Ctrl-C`
+/// does not reach the cancellation path. Waiting a little keeps a slow Buck2
+/// from costing results. Waiting forever would leave the run wedged with
+/// nothing able to end it, so a Buck2 that never catches up is reported as gone
+/// instead, which cancels the run gracefully.
+fn wait_to_send<T>(
+    sender: &SyncSender<T>,
+    value: T,
+    timeout: Duration,
+    interval: Duration,
+) -> Result<(), SinkDisconnected> {
+    let deadline = Instant::now() + timeout;
+    let mut value = value;
+    loop {
+        thread::sleep(interval);
+        match sender.try_send(value) {
+            Ok(()) => return Ok(()),
+            Err(TrySendError::Full(returned)) => {
+                if Instant::now() >= deadline {
+                    return Err(SinkDisconnected);
+                }
+                value = returned;
+            }
+            Err(TrySendError::Disconnected(_)) => return Err(SinkDisconnected),
+        }
+    }
+}
 
 /// Maps nextest's outcome onto the protocol's.
 ///
@@ -272,5 +315,78 @@ mod tests {
         let converted = duration_to_proto(Duration::new(3, 500_000_000));
         assert_eq!(converted.seconds, 3);
         assert_eq!(converted.nanos, 500_000_000);
+    }
+
+    /// A slow Buck2 costs a wait, not results: room appearing before the
+    /// deadline is enough.
+    #[test]
+    fn a_channel_that_drains_in_time_accepts_the_value() {
+        let (sender, receiver) = mpsc::sync_channel::<u32>(1);
+        sender.try_send(1).expect("the channel starts empty");
+
+        let drainer = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(50));
+            // Holding the receiver keeps the channel connected; taking one
+            // value is what makes room.
+            let taken = receiver.recv().expect("a value is waiting");
+            (taken, receiver)
+        });
+
+        wait_to_send(
+            &sender,
+            2,
+            Duration::from_secs(30),
+            Duration::from_millis(5),
+        )
+        .expect("room appeared well before the deadline");
+
+        let (taken, receiver) = drainer.join().expect("the draining thread finishes");
+        assert_eq!(taken, 1);
+        assert_eq!(receiver.recv().expect("the waited-for value arrived"), 2);
+    }
+
+    /// A Buck2 that never reads again must not wedge the run: the wait ends,
+    /// and ending it is reported as a disconnect so the run is cancelled.
+    #[test]
+    fn a_channel_that_never_drains_gives_up() {
+        let (sender, _receiver) = mpsc::sync_channel::<u32>(1);
+        sender.try_send(1).expect("the channel starts empty");
+
+        let started = Instant::now();
+        wait_to_send(
+            &sender,
+            2,
+            Duration::from_millis(50),
+            Duration::from_millis(5),
+        )
+        .expect_err("the deadline passes with the channel still full");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the wait is bounded, took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn a_dropped_receiver_is_reported_at_once() {
+        let (sender, receiver) = mpsc::sync_channel::<u32>(1);
+        sender.try_send(1).expect("the channel starts empty");
+        drop(receiver);
+
+        // A timeout long enough that returning promptly can only mean the
+        // disconnect was noticed rather than waited out.
+        let started = Instant::now();
+        wait_to_send(
+            &sender,
+            2,
+            Duration::from_secs(60),
+            Duration::from_millis(5),
+        )
+        .expect_err("a dropped receiver cannot take the value");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the disconnect ended the wait, took {:?}",
+            started.elapsed()
+        );
     }
 }
