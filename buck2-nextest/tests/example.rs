@@ -47,6 +47,7 @@ fn example_project_runs_end_to_end() {
     check_run(&example, &spec_path);
     check_filterset_narrows_to_one_binary(&example, &spec_path);
     check_default_filter_bounds_the_run(&example, &spec_path);
+    check_junit_report_is_written(&example, &spec_path);
 }
 
 /// Checks that the spec the prelude produced parses into what the crate expects.
@@ -178,6 +179,28 @@ fn check_default_filter_bounds_the_run(example: &Path, spec_path: &Path) {
     assert!(
         stderr.contains("6 tests run: 6 passed"),
         "ignoring the default filter ran everything, got:\n{stderr}"
+    );
+}
+
+/// Checks that a profile with a JUnit path gets its report, which requires the
+/// store directory to be created first.
+fn check_junit_report_is_written(example: &Path, spec_path: &Path) {
+    let junit_path = example.join("target/nextest/with-junit/junit.xml");
+    // Remove any report from an earlier run, so this checks this run's work.
+    match fs::remove_file(&junit_path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => panic!("failed to remove {}: {error}", junit_path.display()),
+    }
+
+    let output = run_nextest(example, spec_path, ["run", "-P", "with-junit"]);
+    assert_success(&output, "run under the with-junit profile");
+
+    let report = fs::read_to_string(&junit_path)
+        .unwrap_or_else(|error| panic!("failed to read {}: {error}", junit_path.display()));
+    assert!(
+        report.contains(r#"tests="6""#),
+        "the report covers all six tests, got:\n{report}"
     );
 }
 
