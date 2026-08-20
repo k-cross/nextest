@@ -2769,6 +2769,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "nextest-session"
+version = "0.1.0"
+dependencies = [
+ "camino",
+ "guppy",
+ "iddqd",
+ "nextest-filtering",
+ "nextest-metadata",
+ "nextest-runner",
+ "nextest-workspace-hack",
+ "quick-junit",
+ "semver",
+ "thiserror 2.0.20",
+ "tracing",
+]
+
+[[package]]
 name = "nextest-workspace-hack"
 version = "0.1.0"
 dependencies = [
