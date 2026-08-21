@@ -189,9 +189,15 @@ mod session;
 pub use context::SessionContext;
 pub use errors::into_report_errors;
 pub use filter::parse_filtersets;
-// Re-exports of everything an integration constructs or consumes, so the
-// contract is one crate. Frontends that already depend on `nextest-runner`
-// directly may keep importing from it; these names are the same types.
+// Re-exports of everything an integration constructs or consumes, so that a
+// frontend needs no dependency on `nextest-runner` to drive the pipeline, name
+// the errors it can fail with, or read the events it produces.
+//
+// The line this draws is between the pipeline and *acquisition*. How a build
+// system discovers and describes what it built is its own business, and it may
+// reach for whatever it likes to do that -- `cargo-nextest` uses
+// `nextest-runner`'s Cargo machinery directly, and should. Everything from
+// `NextestConfig` onwards is the contract, and comes from here.
 
 // The inputs an integration supplies.
 pub use guppy::PackageId;
@@ -205,10 +211,31 @@ pub use nextest_metadata::{BuildPlatform, NextestExitCode, RustBinaryId, RustTes
 pub use nextest_runner::config::core::{
     ConfigExperimental, EarlyProfile, EvaluatableProfile, NextestConfig, get_num_cpus,
 };
+// The whole event vocabulary, for a frontend that consumes the run through a
+// sink. The names above are the ones the contract's own signatures mention;
+// matching on a [`ReporterEvent`] reaches most of the rest of the module, so it
+// is re-exported entire rather than as a list that goes stale.
+pub use nextest_runner::reporter::events;
 // Listing.
 pub use nextest_runner::{
     cargo_config::EnvironmentMap,
     list::{ListProgressOptions, OutputFormat, SerializableFormat, TestExecuteContext, TestList},
+};
+// What those events carry. A payload reaches outside its own module -- a leak
+// or timeout result comes from the configuration vocabulary, a test's output
+// from `test_output` -- so consuming an event means naming these as well.
+pub use nextest_runner::{
+    config::{
+        elements::{
+            FlakyResult, JunitFlakyFailStatus, LeakTimeoutResult, ReportSkipPolicy,
+            SlowTimeoutResult, TestGroup,
+        },
+        scripts::ScriptId,
+    },
+    list::{OwnedTestInstanceId, TestInstanceId},
+    output_spec::{LiveSpec, OutputSpec},
+    runner::StressCount,
+    test_output::{ChildExecutionOutput, ChildOutput, ChildSingleOutput},
 };
 // Running.
 pub use nextest_runner::{
@@ -222,7 +249,7 @@ pub use nextest_runner::{
 };
 // Reporting.
 pub use nextest_runner::{
-    helpers::{ShowTerminalProgress, ThemeCharacters},
+    helpers::{ShowTerminalProgress, ThemeCharacters, plural},
     reporter::{
         Reporter, ReporterBuilder, ReporterOutput, ReporterStats, ShowProgress,
         events::{FinalRunStats, ReporterEvent, RunStats},

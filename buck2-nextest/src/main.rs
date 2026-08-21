@@ -3,7 +3,7 @@
 
 use buck2_nextest::cli::App;
 use clap::Parser;
-use nextest_runner::write_str::WriteStr;
+use nextest_session::WriteStr;
 
 fn main() -> std::process::ExitCode {
     let cli_args: Vec<String> = std::env::args().collect();

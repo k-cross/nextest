@@ -27,10 +27,10 @@ use crate::{
         test_orchestrator_client::TestOrchestratorClient, test_result::OptionalMsg,
     },
 };
-use nextest_metadata::RustBinaryId;
-use nextest_runner::{
-    helpers::plural,
-    reporter::events::{ExecutionResultDescription, ReporterEvent, TestEventKind},
+use nextest_session::{
+    RustBinaryId,
+    events::{ExecutionResultDescription, ReporterEvent, TestEventKind},
+    plural,
 };
 use std::{
     collections::HashMap,
@@ -260,10 +260,7 @@ fn duration_to_proto(duration: Duration) -> prost_types::Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nextest_runner::{
-        config::elements::{LeakTimeoutResult, SlowTimeoutResult},
-        reporter::events::FailureDescription,
-    };
+    use nextest_session::{LeakTimeoutResult, SlowTimeoutResult, events::FailureDescription};
 
     #[test]
     fn nextest_outcomes_map_onto_buck2_statuses() {
