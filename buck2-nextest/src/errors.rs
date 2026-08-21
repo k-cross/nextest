@@ -5,12 +5,13 @@
 
 use camino::{FromPathBufError, Utf8PathBuf};
 use miette::Diagnostic;
-use nextest_filtering::errors::FiltersetParseErrors;
-use nextest_runner::errors::{
-    ConfigParseError, CreateTestListError, FromMessagesError, ProfileNotFound,
-    TestFilterBuildError, TestRunnerBuildError,
+use nextest_session::{
+    NextestExitCode,
+    errors::{
+        ConfigParseError, CreateTestListError, FiltersetParseErrors, FromMessagesError,
+        ProfileNotFound, StoreDirCreateError, TestFilterBuildError, TestRunnerBuildError,
+    },
 };
-use nextest_session::errors::StoreDirCreateError;
 use thiserror::Error;
 
 /// The result type used throughout `buck2-nextest`.
@@ -369,8 +370,6 @@ impl ExpectedError {
     /// These match `cargo-nextest`'s codes so that tooling can treat the two
     /// binaries alike.
     pub fn exit_code(&self) -> i32 {
-        use nextest_metadata::NextestExitCode;
-
         match self {
             Self::SpecReadError { .. }
             | Self::SpecStdinReadError { .. }

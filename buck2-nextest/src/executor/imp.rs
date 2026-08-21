@@ -26,7 +26,7 @@
 //! 4. Run them, streaming results back as they finish.
 //! 5. Report the exit code and stop.
 //!
-//! [`TestRunner::try_execute`]: nextest_runner::runner::TestRunner::try_execute
+//! [`TestRunner::try_execute`]: nextest_session::TestRunner::try_execute
 
 use super::{
     prepare::{PreparedTarget, prepare_all},
@@ -47,9 +47,7 @@ use crate::{
     spec::Buck2TestTarget,
 };
 use camino::{Utf8Path, Utf8PathBuf};
-use nextest_metadata::RustBinaryId;
-use nextest_runner::{helpers::force_or_new_run_id, platform::BuildPlatforms};
-use nextest_session::NoTestsBehavior;
+use nextest_session::{BuildPlatforms, NoTestsBehavior, RustBinaryId, force_or_new_run_id};
 use std::{
     collections::{BTreeMap, HashMap},
     sync::Arc,
