@@ -10,15 +10,10 @@
 use crate::spec::Buck2TestTarget;
 use camino::{Utf8Path, Utf8PathBuf};
 use iddqd::IdOrdMap;
-use nextest_metadata::{BuildPlatform, RustBinaryId, RustTestBinaryKind};
-use nextest_runner::{
-    list::{
-        BinaryList, BinaryListState, PackageInfo, RustBuildMeta, RustTestBinary,
-        TestBinaryInvocation,
-    },
-    platform::BuildPlatforms,
+use nextest_session::{
+    BinaryList, BinaryListState, BuildPlatform, BuildPlatforms, PackageId, PackageInfo,
+    RustBinaryId, RustBuildMeta, RustTestBinary, RustTestBinaryKind, TestBinaryInvocation,
 };
-use nextest_session::PackageId;
 use semver::Version;
 
 /// The name Buck2 uses for its build files.

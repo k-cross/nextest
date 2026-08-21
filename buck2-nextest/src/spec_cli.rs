@@ -25,8 +25,8 @@ use crate::{
 };
 use camino::Utf8PathBuf;
 use clap::{Args, Subcommand, ValueEnum};
-use nextest_runner::{
-    helpers::force_or_new_run_id, list::OutputFormat, platform::BuildPlatforms, write_str::WriteStr,
+use nextest_session::{
+    BuildPlatforms, OutputFormat, SerializableFormat, WriteStr, force_or_new_run_id,
 };
 
 /// The spec-file subcommands.
@@ -139,8 +139,6 @@ pub enum ListFormat {
 
 impl ListFormat {
     fn to_output_format(self) -> OutputFormat {
-        use nextest_runner::list::SerializableFormat;
-
         match self {
             Self::Human => OutputFormat::Human { verbose: false },
             Self::Oneline => OutputFormat::Oneline { verbose: false },
