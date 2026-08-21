@@ -10,10 +10,7 @@ use crate::{
 };
 use camino::Utf8PathBuf;
 use clap::{Args, Parser, ValueEnum};
-use nextest_runner::{
-    test_filter::{FilterBound, RunIgnored},
-    write_str::WriteStr,
-};
+use nextest_session::{FilterBound, RunIgnored, WriteStr};
 use std::collections::BTreeMap;
 #[cfg(unix)]
 use std::os::fd::RawFd;
