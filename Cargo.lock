@@ -367,42 +367,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "buck2-nextest"
-version = "0.1.0"
-dependencies = [
- "camino",
- "camino-tempfile",
- "clap",
- "futures",
- "hyper",
- "hyper-util",
- "iddqd",
- "indoc",
- "insta",
- "miette",
- "nextest-session",
- "nextest-workspace-hack",
- "owo-colors",
- "prost",
- "prost-types",
- "quick-junit",
- "semver",
- "serde",
- "serde_json",
- "serde_path_to_error",
- "test-case",
- "thiserror 2.0.20",
- "tokio",
- "tokio-stream",
- "tonic",
- "tonic-prost",
- "tonic-prost-build",
- "tower",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "bumpalo"
 version = "3.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1753,7 +1717,7 @@ dependencies = [
  "nested",
  "once_cell",
  "pathdiff",
- "petgraph 0.8.3",
+ "petgraph",
  "semver",
  "serde",
  "serde_json",
@@ -2586,12 +2550,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "multimap"
-version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
-
-[[package]]
 name = "native-tls"
 version = "0.2.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2718,7 +2676,7 @@ dependencies = [
  "nix 0.31.3",
  "owo-colors",
  "pathdiff",
- "petgraph 0.8.3",
+ "petgraph",
  "pin-project-lite",
  "pretty_assertions",
  "proptest",
@@ -2799,15 +2757,12 @@ dependencies = [
  "either",
  "foldhash 0.2.0",
  "futures-channel",
+ "futures-core",
  "futures-sink",
- "futures-task",
- "futures-util",
  "getrandom 0.3.4",
  "getrandom 0.4.2",
  "hashbrown 0.17.1",
  "httparse",
- "hyper",
- "hyper-util",
  "idna_adapter",
  "indexmap",
  "libc",
@@ -2819,7 +2774,7 @@ dependencies = [
  "newtype-uuid",
  "num-traits",
  "once_cell",
- "petgraph 0.8.3",
+ "petgraph",
  "phf_shared",
  "proc-macro2",
  "proptest",
@@ -2834,13 +2789,9 @@ dependencies = [
  "smallvec",
  "syn 2.0.117",
  "syn 3.0.3",
- "sync_wrapper",
  "target-spec",
  "target-spec-miette",
  "tokio",
- "tokio-stream",
- "tower",
- "tracing",
  "tracing-core",
  "tracing-subscriber",
  "typenum",
@@ -3216,16 +3167,6 @@ dependencies = [
 
 [[package]]
 name = "petgraph"
-version = "0.7.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3672b37090dbd86368a4145bc067582552b29c27377cad4e0a306c97f9bd7772"
-dependencies = [
- "fixedbitset 0.5.7",
- "indexmap",
-]
-
-[[package]]
-name = "petgraph"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8701b58ea97060d5e5b155d383a69952a60943f0e6dfe30b04c287beb0b27455"
@@ -3422,28 +3363,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "prost-build"
-version = "0.14.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ac6c3320f9abac597dcbc668774ef006702672474aad53c6d596b62e487b40b1"
-dependencies = [
- "heck",
- "itertools 0.14.0",
- "log",
- "multimap",
- "once_cell",
- "petgraph 0.7.1",
- "prettyplease",
- "prost",
- "prost-types",
- "pulldown-cmark",
- "pulldown-cmark-to-cmark",
- "regex",
- "syn 2.0.117",
- "tempfile",
-]
-
-[[package]]
 name = "prost-derive"
 version = "0.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3474,15 +3393,6 @@ dependencies = [
  "bitflags 2.13.1",
  "memchr",
  "unicase",
-]
-
-[[package]]
-name = "pulldown-cmark-to-cmark"
-version = "21.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8246feae3db61428fd0bb94285c690b460e4517d83152377543ca802357785f1"
-dependencies = [
- "pulldown-cmark",
 ]
 
 [[package]]
@@ -4982,18 +4892,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tonic-build"
-version = "0.14.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c68f61875ac5293cf72e6c8cf0158086428c82c37229e98c840878f1706b0322"
-dependencies = [
- "prettyplease",
- "proc-macro2",
- "quote",
- "syn 2.0.117",
-]
-
-[[package]]
 name = "tonic-prost"
 version = "0.14.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5002,22 +4900,6 @@ dependencies = [
  "bytes",
  "prost",
  "tonic",
-]
-
-[[package]]
-name = "tonic-prost-build"
-version = "0.14.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "654e5643eff75d7f8c99197ce1440ed19a3474eada74c12bbac488b2cafdae27"
-dependencies = [
- "prettyplease",
- "proc-macro2",
- "prost-build",
- "prost-types",
- "quote",
- "syn 2.0.117",
- "tempfile",
- "tonic-build",
 ]
 
 [[package]]
