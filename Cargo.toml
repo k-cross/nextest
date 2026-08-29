@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+  "buck2-nextest",
   "cargo-nextest",
   "fixture-data",
   "integration-tests",
