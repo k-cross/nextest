@@ -206,7 +206,10 @@ pub use input::{SessionInputs, TestListOptions};
 // Filtering.
 pub use nextest_filtering::{Filterset, FiltersetKind, KnownGroups, ParseContext};
 // Identity and metadata vocabulary.
-pub use nextest_metadata::{BuildPlatform, NextestExitCode, RustBinaryId, RustTestBinaryKind};
+pub use nextest_metadata::{
+    BuildPlatform, FilterMatch, MismatchReason, NextestExitCode, RustBinaryId, RustTestBinaryKind,
+    TestCaseName,
+};
 // Configuration and profiles.
 pub use nextest_runner::config::core::{
     ConfigExperimental, EarlyProfile, EvaluatableProfile, NextestConfig, get_num_cpus,
@@ -216,10 +219,15 @@ pub use nextest_runner::config::core::{
 // matching on a [`ReporterEvent`] reaches most of the rest of the module, so it
 // is re-exported entire rather than as a list that goes stale.
 pub use nextest_runner::reporter::events;
-// Listing.
+// Listing. A frontend that renders its own listing format walks a `TestList`
+// through `RustTestSuite` and `TestInstance` rather than through
+// `OutputFormat`, so both are part of the contract.
 pub use nextest_runner::{
     cargo_config::EnvironmentMap,
-    list::{ListProgressOptions, OutputFormat, SerializableFormat, TestExecuteContext, TestList},
+    list::{
+        ListProgressOptions, OutputFormat, RustTestSuite, SerializableFormat, TestExecuteContext,
+        TestInstance, TestList,
+    },
 };
 // What those events carry. A payload reaches outside its own module -- a leak
 // or timeout result comes from the configuration vocabulary, a test's output
