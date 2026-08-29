@@ -367,6 +367,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "buck2-nextest"
+version = "0.1.0"
+dependencies = [
+ "camino",
+ "camino-tempfile",
+ "clap",
+ "iddqd",
+ "miette",
+ "nextest-session",
+ "nextest-workspace-hack",
+ "semver",
+ "serde",
+ "serde_json",
+ "swrite",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
