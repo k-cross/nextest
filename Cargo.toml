@@ -1,7 +1,6 @@
 [workspace]
 resolver = "2"
 members = [
-  "buck2-nextest",
   "cargo-nextest",
   "fixture-data",
   "integration-tests",
@@ -28,7 +27,6 @@ atomicwrites = "0.4.4"
 bitflags = "2.13.1"
 bstr = { version = "1.13.0", default-features = false, features = ["std"] }
 bytesize = { version = "2.4.2", features = ["serde"] }
-buck2-nextest = { path = "buck2-nextest" }
 bytes = "1.12.1"
 camino = "1.2.5"
 camino-tempfile = "1.4.1"
@@ -110,8 +108,6 @@ petgraph = "0.8.3"
 pin-project-lite = "0.2.17"
 pretty_assertions = "1.4.1"
 proptest = "1.11.0"
-prost = "0.14.1"
-prost-types = "0.14.1"
 pulldown-cmark = { version = "0.13.4", default-features = false }
 quick-junit = "0.7.0"
 rand = "0.10.2"
@@ -156,17 +152,6 @@ tokio = "1.53.1"
 tokio-stream = "0.1.19"
 toml = "1.1.4"
 toml_edit = "0.25.13"
-# Buck2's test executor protocol is gRPC. `tonic-prost` carries the codec the
-# generated code uses; `tonic-prost-build` is only for the `generate-proto`
-# tool, so that building the workspace never requires `protoc`.
-tonic = "0.14.2"
-tonic-prost = "0.14.2"
-tonic-prost-build = "0.14.6"
-# `hyper-util` and `tower` are needed to hand tonic a socket Buck2 already
-# connected for us, rather than letting it dial one itself.
-hyper = "1.6.0"
-hyper-util = { version = "0.1.13", features = ["tokio"] }
-tower = { version = "0.5.2", features = ["util"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["std", "tracing-log", "fmt"] }
 unicode-ident = "1.0.24"
