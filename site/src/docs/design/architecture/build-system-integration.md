@@ -22,8 +22,8 @@ starts here.
 
 The variation between build systems is in how test binaries are *discovered
 and described*: Cargo streams compiler messages from `cargo test --no-run`,
-Buck2 hands over specs one at a time over gRPC, and a future integration might
-read a manifest. Once the binaries are described, nothing about the pipeline
+Buck2 names one test binary per invocation on the command line, and a future
+integration might read a manifest. Once the binaries are described, nothing about the pipeline
 varies per build system, and there is no point mid-run where nextest needs to
 call back into build-system-specific behavior — reporting is already a
 callback, and results flow out through it.
@@ -74,9 +74,9 @@ In order:
 
 `run_to_completion` takes a *sink*: a callback that sees every reporter event
 before the reporter renders it. This is how a build system that renders
-results itself consumes them — `buck2-nextest` forwards each event to Buck2
-over gRPC, while nextest's own reporter writes plainly to standard error as a
-detail view. If the sink returns an error, the run is cancelled gracefully:
+results itself consumes them — `buck2-nextest` collects the one test's outcome
+from the events and writes it as the JSON Buck2 parses, while nextest's own
+reporter writes plainly to standard error as a detail view. If the sink returns an error, the run is cancelled gracefully:
 nextest keeps reporting until the tests it has already started finish. A
 frontend with no sink passes an infallible closure and recovers the reporter's
 own error type with `into_report_errors`.
@@ -102,9 +102,13 @@ is judged, so frontends cannot drift apart:
 
 `NoTestsBehavior` is the one policy knob: a run selecting no tests can pass,
 warn, or fail. Nextest's default is to fail, on the grounds that the person
-asked for tests and got none; Buck2 chooses the target set itself, so
-`buck2-nextest` passes `Pass` — `buck2 test //:some-library` finding no tests
-is routine rather than a mistake.
+asked for tests and got none.
+
+A frontend that runs one named test at a time may not want this table at all.
+`buck2-nextest` reports each test's outcome to Buck2 as JSON and derives its
+exit code from that outcome, because `final_outcome` judges a whole run: it
+calls a skipped test "no tests were selected", which is the right answer for a
+run and the wrong one for a single test Buck2 chose not to run.
 
 Each frontend maps `RunFailure` onto its own error type for rendering; the
 codes themselves come from `RunFailure::exit_code` and are the same
@@ -117,8 +121,8 @@ is presentation. Both stay out of `nextest-session`:
 
 * **Acquisition**: Cargo metadata and the package graph, `cargo test --no-run`
   and message parsing, reuse-build archives and path remapping, `.cargo/config.toml`
-  environment; Buck2's gRPC transport and spec parsing. Each produces the
-  contract's inputs.
+  environment; the Buck2 target label, binary path, and harness arguments
+  `buck2-nextest` is invoked with. Each produces the contract's inputs.
 * **Presentation and policy**: CLI parsing, user configuration and its
   precedence rules, reporter display options, pagers, version-requirement
   gates, and double-spawn or target-runner enablement. The contract's currency
