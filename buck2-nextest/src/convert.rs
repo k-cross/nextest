@@ -42,6 +42,9 @@ pub(crate) struct TargetInput<'a> {
 
     /// Arguments that belong before nextest's own, from the harness command.
     pub(crate) leading_args: &'a [String],
+
+    /// The directory Buck2 ran this action in, which is where the test runs.
+    pub(crate) cwd: &'a Utf8Path,
 }
 
 /// A [`BinaryList`] plus the package its binary refers to.
@@ -93,10 +96,13 @@ pub(crate) fn to_binary_list(
             // The rule's `env` is the action's environment, which this process
             // already has and passes on to the test it spawns.
             env: Default::default(),
-            // Stated outright rather than left to fall out of `manifest_path`,
-            // which describes where the target was declared -- not where it
-            // runs.
-            cwd: Some(package_dir.clone()),
+            // Buck2 runs each action from the project root (see
+            // `run_from_project_root`), and the paths it hands a test through
+            // the environment -- `$(location ...)` and friends -- are relative
+            // to that root. So the test has to run where Buck2 put us, or none
+            // of them resolve. Nextest reports this same directory as
+            // `CARGO_MANIFEST_DIR`.
+            cwd: Some(input.cwd.to_owned()),
         },
     };
 
@@ -177,6 +183,7 @@ mod tests {
                 package_path,
                 program: Utf8Path::new(program),
                 leading_args: &args,
+                cwd: Utf8Path::new("/project"),
             },
             Utf8Path::new("/project"),
         )
@@ -212,33 +219,31 @@ mod tests {
         );
     }
 
-    /// Tests run in the target's package directory, and the invocation says so
-    /// outright rather than leaving it to be derived from the manifest path.
+    /// A test runs where Buck2 ran the action, not in its package directory:
+    /// the paths Buck2 hands it are relative to the project root.
     #[test]
-    fn cwd_is_the_target_package_directory() {
+    fn cwd_is_where_buck2_ran_the_action() {
         let converted = convert("root//app/tests:zebra", "app/tests", "buck-out/gen/zebra");
-        let binary = &converted.binary_list.rust_binaries[0];
-        assert_eq!(
-            binary.invocation.cwd.as_deref(),
-            Some(Utf8Path::new("/project/app/tests"))
-        );
-        assert_eq!(binary.invocation.leading_args, vec!["--flag"]);
-
-        let package_id = PackageId::new("root//app/tests:zebra".to_owned());
-        let package = converted.packages.get(&package_id).expect("present");
-        assert_eq!(package.manifest_path, "/project/app/tests/BUCK");
-    }
-
-    /// A target in the root package runs in the project root, with no trailing
-    /// separator left behind by joining an empty package path.
-    #[test]
-    fn root_package_cwd_is_the_project_root() {
-        let converted = convert("root//:demo", "", "buck-out/demo");
         let binary = &converted.binary_list.rust_binaries[0];
         assert_eq!(
             binary.invocation.cwd.as_deref(),
             Some(Utf8Path::new("/project"))
         );
+        assert_eq!(binary.invocation.leading_args, vec!["--flag"]);
+
+        // The manifest path still names the package, which is where the target
+        // was declared.
+        let package_id = PackageId::new("root//app/tests:zebra".to_owned());
+        let package = converted.packages.get(&package_id).expect("present");
+        assert_eq!(package.manifest_path, "/project/app/tests/BUCK");
+    }
+
+    /// The root package's manifest path has no trailing separator left behind
+    /// by joining an empty package path onto the project root.
+    #[test]
+    fn the_root_package_manifest_is_at_the_project_root() {
+        let converted = convert("root//:demo", "", "buck-out/demo");
+        let binary = &converted.binary_list.rust_binaries[0];
         assert_eq!(binary.name, "demo");
 
         let package_id = PackageId::new("root//:demo".to_owned());
