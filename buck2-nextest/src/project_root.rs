@@ -105,21 +105,20 @@ fn absolute_project_root(path: &Utf8Path) -> Result<Utf8PathBuf> {
 /// directory is where the walk starts, and stands in for the root if nothing
 /// along the way is marked -- which leaves nextest reading configuration from
 /// the same place a person running `cargo nextest run` there would.
-pub(crate) fn resolve(explicit: Option<&Utf8Path>) -> Result<Utf8PathBuf> {
+pub(crate) fn resolve(explicit: Option<&Utf8Path>, cwd: &Utf8Path) -> Result<Utf8PathBuf> {
     let root = match explicit {
         Some(path) => path.to_owned(),
-        None => {
-            let cwd = current_dir()?;
-            find_project_root(&cwd).unwrap_or(cwd)
-        }
+        None => find_project_root(cwd).unwrap_or_else(|| cwd.to_owned()),
     };
     absolute_project_root(&root)
 }
 
-/// Returns the current directory as a UTF-8 path.
-fn current_dir() -> Result<Utf8PathBuf> {
+/// Returns the directory Buck2 ran this action in, as a UTF-8 absolute path.
+pub(crate) fn current_dir() -> Result<Utf8PathBuf> {
     let cwd = std::env::current_dir().map_err(|error| ExpectedError::CurrentDirError { error })?;
-    Utf8PathBuf::try_from(cwd).map_err(|error| ExpectedError::CurrentDirNonUtf8 { error })
+    let cwd =
+        Utf8PathBuf::try_from(cwd).map_err(|error| ExpectedError::CurrentDirNonUtf8 { error })?;
+    absolute_project_root(&cwd)
 }
 
 #[cfg(test)]

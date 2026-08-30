@@ -1,0 +1,19 @@
+# Nextest configuration for the example project.
+#
+# `buck2-nextest` loads this from `<project-root>/.config/nextest.toml`, exactly as `cargo-nextest`
+# loads it from the workspace root. A profile is chosen on the toolchain rather than per run, since
+# Buck2 builds the command line.
+
+[profile.default]
+failure-output = "immediate-final"
+
+# Narrows what the listing reports, so Buck2 never schedules an action for a test outside the
+# filter. Select it with `-c` on a toolchain that sets `profile`.
+[profile.narrowed]
+default-filter = 'binary_id(root//example:demo-lib-test)'
+
+[profile.ci]
+failure-output = "immediate-final"
+fail-fast = false
+retries = 2
+status-level = "all"
