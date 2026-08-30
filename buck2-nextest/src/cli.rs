@@ -120,13 +120,15 @@ impl App {
 impl TargetArgs {
     /// Resolves the project root and converts the target into pipeline inputs.
     fn into_context(self) -> Result<Context> {
-        let project_root = project_root::resolve(self.project_root.as_deref())?;
+        let cwd = project_root::current_dir()?;
+        let project_root = project_root::resolve(self.project_root.as_deref(), &cwd)?;
         let binaries = to_binary_list(
             &TargetInput {
                 label: &self.label,
                 package_path: &self.package_path,
                 program: &self.program,
                 leading_args: &self.args,
+                cwd: &cwd,
             },
             &project_root,
         )?;
