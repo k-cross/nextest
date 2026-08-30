@@ -4,30 +4,81 @@ icon: material/hammer-wrench
 
 # Buck2
 
-`buck2-nextest` lets [Buck2](https://buck2.build/) run Rust tests with nextest. It sits where
-`cargo-nextest` sits for Cargo: Buck2 decides what to test and builds it, and nextest lists and runs
-the tests.
+`buck2-nextest` lets [Buck2](https://buck2.build/) run Rust tests with nextest. Buck2 discovers,
+schedules, and caches the tests; nextest executes them, so each test sees the same configuration,
+retries, slow-test handling, and leak detection it would under `cargo nextest run`.
 
-!!! warning "Experimental"
+!!! warning "Experimental, and blocked on Buck2"
 
-    `buck2-nextest` is not released, and the protocol it speaks is internal to Buck2 with no
-    stability guarantee. Expect it to need updating alongside Buck2.
+    `buck2-nextest` is not released, and it depends on Buck2's `InternalRunnerTestInfo` provider,
+    which does not yet work in open-source Buck2. See [Buck2 support](#buck2-support) below.
+
+## How it works
+
+A target built by the `nextest_test` rule returns Buck2's `InternalRunnerTestInfo` provider instead
+of the usual `ExternalRunnerTestInfo`. Buck2 then runs two commands itself, as ordinary build
+actions:
+
+1. `buck2-nextest list` once per test target, to find out which tests the binary contains.
+2. `buck2-nextest run` once per discovered test, with that test's name appended.
+
+Each command writes JSON that Buck2 parses through the rule's Starlark callbacks. Those callbacks
+cannot run anything, so all the judgement lives in `buck2-nextest` and they are left as
+`json.decode`.
+
+The division of labour follows from that. Buck2 owns everything spanning tests — scheduling,
+concurrency, caching, and the results UI — because it is the one running the actions. Nextest owns
+everything within a test, because `run` drives the real nextest pipeline.
+
+The visible difference from a stock `rust_test` is that a test binary is no longer one opaque unit
+of work: `buck2 test` shows a row per test, and caches per test.
 
 ## Setting it up
 
-Point Buck2 at the binary in your project's `.buckconfig`:
+Copy the `nextest` cell from `buck2-nextest/buck/nextest/` into your project and declare it in
+`.buckconfig`:
 
 ```ini
-[test]
-  v2_test_executor = /absolute/path/to/buck2-nextest
+[cells]
+  nextest = nextest
 ```
 
-The value must be a bare absolute path; Buck2 does not accept arguments after it. A
-`$BUCK2_BINARY_DIR/` prefix resolves next to the `buck2` binary itself. For a one-off, pass it on the
-command line instead:
+Declare a toolchain that says where the binary is:
 
-```console
-$ buck2 test -c test.v2_test_executor=/path/to/buck2-nextest //...
+```python
+load("@nextest//:nextest_toolchain.bzl", "system_nextest_toolchain")
+
+system_nextest_toolchain(
+    name = "nextest",
+    visibility = ["PUBLIC"],
+)
+```
+
+`system_nextest_toolchain` finds `buck2-nextest` on `PATH`. For remote execution, use
+`nextest_toolchain` instead and point it at a target producing the binary, so Buck2 materializes it
+wherever the action runs:
+
+```python
+load("@nextest//:nextest_toolchain.bzl", "nextest_toolchain")
+
+nextest_toolchain(
+    name = "nextest",
+    nextest = "//tools:buck2-nextest",
+    visibility = ["PUBLIC"],
+)
+```
+
+Then declare test targets with `nextest_test`, which takes exactly the attributes `rust_test` does:
+
+```python
+load("@nextest//:nextest_test.bzl", "nextest_test")
+
+nextest_test(
+    name = "my-test",
+    srcs = ["src/lib.rs"],
+    crate_root = "src/lib.rs",
+    edition = "2024",
+)
 ```
 
 ## Running tests
@@ -36,63 +87,90 @@ $ buck2 test -c test.v2_test_executor=/path/to/buck2-nextest //...
 $ buck2 test //...
 ```
 
-Arguments after `--` go to nextest, so nextest's own selection and configuration work as usual:
+Buck2's own selection works as usual, including label filtering, since the rule passes labels and
+contacts through:
 
 ```console
-$ buck2 test //... -- -E 'binary_id(root//:my-test)'
-$ buck2 test //... -- --run-ignored all
-$ buck2 test //... -- -P ci
-$ buck2 test //... -- --env MY_VAR=1
+$ buck2 test //... --exclude slow
 ```
+
+## Configuration
 
 Configuration comes from `.config/nextest.toml` at the Buck2 project root, exactly as it comes from
-the workspace root under Cargo. See [Configuration](../configuration/index.md). A profile's
-[default filter](../selecting.md#running-a-subset-of-tests-by-default) applies as it does under
-Cargo, and `--ignore-default-filter` turns it off:
+the workspace root under Cargo. See [Configuration](../configuration/index.md).
 
-```console
-$ buck2 test //... -- --ignore-default-filter
+Buck2 builds the command line, so a profile is chosen on the toolchain rather than per run:
+
+```python
+system_nextest_toolchain(
+    name = "nextest",
+    profile = "ci",
+    config_file = "//:nextest-config",
+    visibility = ["PUBLIC"],
+)
 ```
 
-Buck2 does not tell a test executor where the project root is, so `buck2-nextest` works it out from
-the directory Buck2 says each target runs in. Tests see it as an absolute
-`NEXTEST_WORKSPACE_ROOT`.
+`config_file` is a source, so naming it makes the configuration an input to every test action —
+which is what lets it be found under remote execution.
+
+A profile's [default filter](../selecting.md#running-a-subset-of-tests-by-default) applies to
+*listing*, so Buck2 never schedules an action for a test the filter would discard. It is not applied
+again when running: Buck2 chose that test from what it was told, and is waiting for a result about
+it.
 
 Because [filtersets](../filtersets/index.md) here have no Cargo package graph to resolve against,
-`package()`, `deps()`, and `rdeps()` are unavailable. Everything else works, and binary IDs are Buck2
-labels: `binary_id(cell//path/to:target)`.
+`package()`, `deps()`, and `rdeps()` are unavailable. Binary IDs are Buck2 labels, so a filterset
+reads `binary_id(cell//path/to:target)`.
 
-## Seeing nextest's output
+Tests run in the directory Buck2 ran the action in, which is the project root. Nextest reports that
+same directory as `CARGO_MANIFEST_DIR`, and the project root as an absolute
+`NEXTEST_WORKSPACE_ROOT`. This is what makes the project-relative paths Buck2 hands a test through
+the environment — `$(location ...)` and friends — resolve.
 
-Buck2 renders results itself and captures the executor's output. To see nextest's own reporter as
-well:
+## Ignored tests
 
-```console
-$ buck2 test //... --test-executor-stderr=-
-```
+An `#[ignore]`d test is listed rather than hidden, and reported as skipped when Buck2 asks for it.
+A row Buck2 never shows would be indistinguishable from a test that does not exist.
 
 ## What it does and does not do
 
-Buck2 hands over one test target at a time over gRPC, then says it has sent them all.
-`buck2-nextest` asks Buck2 how to run each target, then runs them with nextest's runner — so
-[per-test process isolation](../design/why-process-per-test.md),
-[retries](../features/retries.md), [slow-test handling](../features/slow-tests.md), and
-[leak detection](../features/leaky-tests.md) all work as they do under Cargo.
+Per-test process isolation, [retries](../features/retries.md),
+[slow-test handling](../features/slow-tests.md), and
+[leak detection](../features/leaky-tests.md) all work as they do under Cargo, because they happen
+inside the action Buck2 ran.
 
-Some limits follow from that:
+Some limits follow from Buck2 owning the run:
 
-* **Rust targets only.** Nextest lists and runs tests over the libtest protocol, so a target of any
-  other test type is rejected by name. In a repository with tests in several languages, scope the
-  pattern to Rust targets.
-* **Local execution only.** Nextest spawns the test processes, so they do not run on Buck2's remote
-  execution.
-* **Nothing starts until analysis finishes.** Nextest builds one test list and runs it, so the whole
-  set of targets is collected before the first test starts.
+* **Rust targets only.** Nextest lists and runs tests over the libtest protocol.
+* **Nothing that spans tests.** Test groups, global fail-fast, partitioning, and a run-level JUnit
+  report have no meaning when each test is a separate action. Buck2's own scheduling replaces them.
+* **A test binary is listed once per run, and again for each of its tests.** The pipeline enumerates
+  before it runs, so each per-test action re-lists its binary. This is the cost of running the real
+  pipeline per test.
+* **No `buck2 test -- <nextest args>` passthrough.** Buck2 builds the command line; configure
+  nextest through the toolchain and `.config/nextest.toml` instead.
+
+## Buck2 support
+
+`InternalRunnerTestInfo` landed in Buck2 in June 2026, but does not yet work in open-source Buck2.
+Two bugs affect any target using it, neither of them nextest's:
+
+* `buck2 test` fails while tearing the run down, after every result has already been reported
+  correctly. The internal runner's orchestrator is dropped before the results channel is drained,
+  and its `Drop` poisons the channel. Reported as
+  [facebook/buck2#1479](https://github.com/facebook/buck2/issues/1479), fixed by
+  [#1461](https://github.com/facebook/buck2/pull/1461).
+* A failing test still exits zero. The exit code comes from the external test executor, which never
+  saw these tests, so failures never reach it — a red run reports success.
+
+Both reproduce with a rule that returns `InternalRunnerTestInfo` and runs `/bin/echo`, with nextest
+nowhere in the picture. Against a Buck2 carrying both fixes, the example project in
+`buck2-nextest/buck/` reports `Pass 6, Skip 1`, and a failing test exits 32.
 
 ## An example
 
-The nextest repository contains a complete, runnable Buck2 project at `buck2-nextest/example/`, with
-a README covering both this flow and how to replay a run from a captured spec file.
+The nextest repository contains a complete, runnable Buck2 project at `buck2-nextest/buck/`, with
+the rule library it uses in `buck2-nextest/buck/nextest/`.
 
 `buck2-nextest` is also the reference implementation of nextest's
 [build system integration contract](../design/architecture/build-system-integration.md), for anyone
