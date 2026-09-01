@@ -64,8 +64,6 @@ impl Fixture {
         let dir = Utf8TempDir::new().expect("a temporary directory");
         let root = dir.path().to_owned();
 
-        // `.buckroot` is what marks this as a Buck2 project, and so what the
-        // binary walks up to find when no `--project-root` is given.
         std::fs::write(root.join(".buckroot"), "").expect("the buckroot is written");
         std::fs::create_dir_all(root.join(".config")).expect("the config directory is created");
         std::fs::write(root.join(".config/nextest.toml"), config).expect("the config is written");
@@ -101,8 +99,6 @@ impl Fixture {
             .current_dir(&self.root)
             .args(args)
             .args(["--label", LABEL, "--program", self.program.as_str()])
-            // The outer `cargo nextest run` sets this, and it would otherwise
-            // choose the profile out from under a test that did not ask.
             .env_remove("NEXTEST_PROFILE")
             .env("BUCK2_NEXTEST_FLAKY_MARKER", self.root.join("flaky.marker"))
             .output()
@@ -227,8 +223,6 @@ fn reports_a_failing_test_with_its_panic_message() {
 
     assert_eq!(string(&result, "name"), "root//app:harness - tests::fails");
     assert_eq!(string(&result, "status"), "FAIL");
-    // 100 is nextest's code for a failed run, and any nonzero value is what
-    // Buck2 falls back to if it cannot parse the JSON above.
     assert_eq!(code, 100);
     assert!(
         string(&result, "details").contains("the distinctive panic message"),
@@ -339,9 +333,6 @@ fn an_explicit_project_root_overrides_the_walk() {
     let fixture = Fixture::new("[profile.chosen]\nretries = 0\n[profile.default]\n");
     let elsewhere = Utf8TempDir::new().expect("a temporary directory");
 
-    // Run from a directory with no `.buckroot` above it, naming the root
-    // outright. The profile only exists in the fixture's configuration, so
-    // finding it proves the override was used.
     let output = Command::new(env!("CARGO_BIN_EXE_buck2-nextest"))
         .current_dir(elsewhere.path())
         .args(["list", "--label", LABEL])

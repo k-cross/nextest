@@ -100,8 +100,6 @@ pub(crate) fn result_from_finished(
 ) -> TestResult {
     let name = display_name(label, id.test_name);
 
-    // Every attempt is time this test cost, and Buck2 shows one number per
-    // test, so a retried test reports the total rather than only its last try.
     let duration = run_statuses
         .iter()
         .map(|status| status.time_taken)
@@ -127,8 +125,6 @@ pub(crate) fn result_from_finished(
                 nextest_session::FlakyResult::Pass => BuckTestStatus::Pass,
                 nextest_session::FlakyResult::Fail => BuckTestStatus::Fail,
             };
-            // The interesting output is the failure, not the attempt that
-            // finally worked.
             let details = prior_statuses.last().and_then(details_for);
             (status, Some(message), details)
         }
@@ -180,8 +176,6 @@ fn failure_status(status: &ExecuteStatus<LiveSpec>) -> BuckTestStatus {
         | ExecutionResultDescription::Leak { .. }
         | ExecutionResultDescription::Fail { .. }
         | ExecutionResultDescription::ExecFail => BuckTestStatus::Fail,
-        // A result nextest grew since this was written. It reached the failure
-        // arm, so report the failure rather than inventing a status for it.
         _ => BuckTestStatus::Fail,
     }
 }
@@ -202,8 +196,6 @@ fn tolerated_message(status: &ExecuteStatus<LiveSpec>) -> Option<String> {
         ExecutionResultDescription::Pass
         | ExecutionResultDescription::Fail { .. }
         | ExecutionResultDescription::ExecFail => None,
-        // A result nextest grew since this was written. The test passed, so
-        // there is nothing that has to be said about it.
         _ => None,
     }
 }
@@ -231,8 +223,6 @@ fn failure_message(status: &ExecuteStatus<LiveSpec>) -> Option<String> {
         },
     };
 
-    // Leaking is orthogonal to failing, so it is appended rather than replacing
-    // whatever the test failed for.
     if matches!(
         &status.result,
         ExecutionResultDescription::Fail { leaked: true, .. }
@@ -272,7 +262,6 @@ fn details_for(status: &ExecuteStatus<LiveSpec>) -> Option<String> {
             ChildOutputDescription::Combined { output } => {
                 append_section(&mut buf, "output", Some(&output.buf()[..]));
             }
-            // Only produced when replaying a recorded run, which this never is.
             ChildOutputDescription::NotLoaded => {}
         },
         ChildExecutionOutputDescription::StartError(error) => {

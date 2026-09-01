@@ -36,13 +36,9 @@ pub(crate) fn run_one(
     let profile = cx.evaluate_profile(early_profile)?;
     let ctx = cx.session_context();
 
-    // An exact pattern is what `--exact` uses, so this selects the one test
-    // Buck2 named and nothing that merely contains its name.
     let mut patterns = TestFilterPatterns::new(Vec::new());
     patterns.add_exact_pattern(test_name.to_owned());
 
-    // `RunIgnored::Default` leaves an `#[ignore]`d test deselected, which
-    // surfaces as a skip below rather than silently running it.
     let filter = TestFilter::new(
         NextestRunMode::Test,
         RunIgnored::Default,
@@ -51,28 +47,17 @@ pub(crate) fn run_one(
     )
     .map_err(|error| ExpectedError::TestFilterBuildError { error })?;
 
-    // Buck2 already applied the default-filter when it listed this target, and
-    // then chose this test from what it saw. Applying it a second time here
-    // could only take away a test Buck2 is waiting for a result about.
     let session = cx.build_session(&ctx, &profile, &filter, FilterBound::All)?;
 
     let runner = session
         .build_runner(
             TestRunnerBuilder::default(),
             cli_args,
-            // Nextest spawned the test process, so nextest has to shut it down:
-            // a signal must still reach the graceful cancellation path rather
-            // than killing this process and orphaning the test.
             SignalHandlerKind::Standard,
-            // Standard input belongs to Buck2, so nextest's interactive
-            // features have nothing to read.
             InputHandlerKind::Noop,
         )
         .map_err(|error| ExpectedError::TestRunnerBuildError { error })?;
 
-    // The writer is declared next to the borrows it shares a lifetime with:
-    // `ReporterOutput` is invariant, so one built further out cannot be
-    // narrowed to this scope.
     let mut plain_stderr = PlainStderrWriter;
     let reporter: Reporter<'_> = ReporterBuilder::default().build(
         session.test_list(),
@@ -80,8 +65,6 @@ pub(crate) fn run_one(
         ShowTerminalProgress::No,
         ReporterOutput::Writer {
             writer: &mut plain_stderr,
-            // Whatever is downstream of Buck2's capture is unknown, so stick
-            // to ASCII.
             use_unicode: false,
         },
         StructuredReporter::new(),
@@ -98,10 +81,6 @@ pub(crate) fn run_one(
         },
     )?;
 
-    // Buck2 named a test that this binary does not have, which means the
-    // listing it chose from no longer describes the binary. Writing nothing
-    // would have Buck2 synthesize a result from the exit code, but a bare
-    // failure is a poor account of a stale listing, so say so instead.
     let Some(result) = result else {
         return Err(ExpectedError::TestNotFound {
             label: cx.label.clone(),
@@ -118,15 +97,6 @@ pub(crate) fn run_one(
         .and_then(|()| writer.write_str_flush())
         .map_err(|error| ExpectedError::WriteEventError { error })?;
 
-    // The exit code has to agree with the JSON. If the callback cannot make
-    // sense of what was written, Buck2 synthesizes a status from the exit code
-    // instead -- pass for zero, fail for anything else -- so the two must not
-    // contradict each other.
-    //
-    // This is deliberately not `final_outcome`, which judges a whole run: it
-    // reports "no tests were selected" for a test that was skipped, which is
-    // the right answer for a run and the wrong one here. Buck2 asked about one
-    // test, and a test it chose not to run did not fail.
     Ok(match status {
         BuckTestStatus::Pass | BuckTestStatus::Skip => 0,
         BuckTestStatus::Fail | BuckTestStatus::Timeout => NextestExitCode::TEST_RUN_FAILED,

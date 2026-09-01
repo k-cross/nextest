@@ -24,13 +24,6 @@ pub(crate) fn list(cx: &Context, writer: &mut dyn WriteStr) -> Result<()> {
     let profile = cx.evaluate_profile(early_profile)?;
     let ctx = cx.session_context();
 
-    // Ignored tests are listed, not hidden. Buck2 shows one row per test, so an
-    // ignored test that never appears is indistinguishable from one that does
-    // not exist; listing it and reporting SKIP when it is run says which.
-    //
-    // The profile's default-filter is honoured, though, since that is a
-    // statement about which tests are worth running at all -- and applying it
-    // here means Buck2 never schedules an action for a test it would discard.
     let filter = TestFilter::new(
         NextestRunMode::Test,
         RunIgnored::All,
