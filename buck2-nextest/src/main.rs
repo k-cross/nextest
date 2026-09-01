@@ -10,9 +10,6 @@ fn main() -> std::process::ExitCode {
     let cli_args: Vec<String> = std::env::args().collect();
     let app = App::parse();
 
-    // Standard output carries the JSON Buck2's callbacks parse, so nothing else
-    // may be written to it; errors go to standard error, which Buck2 keeps
-    // alongside the action's result.
     let mut stdout = std::io::stdout();
     let mut writer = StdoutWriter(&mut stdout);
 

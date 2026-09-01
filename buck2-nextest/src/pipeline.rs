@@ -47,8 +47,6 @@ pub(crate) struct Context {
 impl Context {
     /// Loads nextest's configuration from the project root.
     pub(crate) fn load_config(&self) -> Result<NextestConfig> {
-        // Buck2 has no Cargo package graph, so package-graph filterset
-        // predicates are unavailable. See `ParseContext::without_graph`.
         let pcx = ParseContext::without_graph();
 
         NextestConfig::from_sources(
@@ -118,7 +116,6 @@ impl Context {
                 packages: &self.binaries.packages,
                 workspace_root: self.project_root.clone(),
                 env: EnvironmentMap::empty(),
-                // No path remapping: the binary is already where Buck2 put it.
                 path_mapper: PathMapper::noop(),
             },
             filter,
@@ -126,7 +123,6 @@ impl Context {
                 partitioner_builder: None,
                 platform_filter: None,
                 filter_bound,
-                // One binary, so there is nothing to list in parallel.
                 list_threads: 1,
                 progress: ListProgressOptions::new(
                     ShowProgress::default(),

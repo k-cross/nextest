@@ -189,91 +189,49 @@ mod session;
 pub use context::SessionContext;
 pub use errors::into_report_errors;
 pub use filter::parse_filtersets;
-// Re-exports of everything an integration constructs or consumes, so that a
-// frontend needs no dependency on `nextest-runner` to drive the pipeline, name
-// the errors it can fail with, or read the events it produces.
-//
-// The line this draws is between the pipeline and *acquisition*. How a build
-// system discovers and describes what it built is its own business, and it may
-// reach for whatever it likes to do that -- `cargo-nextest` uses
-// `nextest-runner`'s Cargo machinery directly, and should. Everything from
-// `NextestConfig` onwards is the contract, and comes from here.
-
-// The inputs an integration supplies.
 pub use guppy::PackageId;
 pub use iddqd::IdOrdMap;
 pub use input::{SessionInputs, TestListOptions};
-// Filtering.
 pub use nextest_filtering::{Filterset, FiltersetKind, KnownGroups, ParseContext};
-// Identity and metadata vocabulary.
 pub use nextest_metadata::{
     BuildPlatform, FilterMatch, MismatchReason, NextestExitCode, RustBinaryId, RustTestBinaryKind,
     TestCaseName,
 };
-// Configuration and profiles.
-pub use nextest_runner::config::core::{
-    ConfigExperimental, EarlyProfile, EvaluatableProfile, NextestConfig, get_num_cpus,
-};
-// The whole event vocabulary, for a frontend that consumes the run through a
-// sink. The names above are the ones the contract's own signatures mention;
-// matching on a [`ReporterEvent`] reaches most of the rest of the module, so it
-// is re-exported entire rather than as a list that goes stale.
-pub use nextest_runner::reporter::events;
-// Listing. A frontend that renders its own listing format walks a `TestList`
-// through `RustTestSuite` and `TestInstance` rather than through
-// `OutputFormat`, so both are part of the contract.
 pub use nextest_runner::{
     cargo_config::EnvironmentMap,
-    list::{
-        ListProgressOptions, OutputFormat, RustTestSuite, SerializableFormat, TestExecuteContext,
-        TestInstance, TestList,
-    },
-};
-// What those events carry. A payload reaches outside its own module -- a leak
-// or timeout result comes from the configuration vocabulary, a test's output
-// from `test_output` -- so consuming an event means naming these as well.
-pub use nextest_runner::{
     config::{
+        core::{ConfigExperimental, EarlyProfile, EvaluatableProfile, NextestConfig, get_num_cpus},
         elements::{
             FlakyResult, JunitFlakyFailStatus, LeakTimeoutResult, ReportSkipPolicy,
             SlowTimeoutResult, TestGroup,
         },
         scripts::ScriptId,
     },
-    list::{OwnedTestInstanceId, TestInstanceId},
-    output_spec::{LiveSpec, OutputSpec},
-    runner::StressCount,
-    test_output::{ChildExecutionOutput, ChildOutput, ChildSingleOutput},
-};
-// Running.
-pub use nextest_runner::{
     double_spawn::DoubleSpawnInfo,
-    helpers::force_or_new_run_id,
+    helpers::{ShowTerminalProgress, ThemeCharacters, force_or_new_run_id, plural},
     input::InputHandlerKind,
-    run_mode::NextestRunMode,
-    runner::{TestRunner, TestRunnerBuilder, VersionEnvVars},
-    signal::SignalHandlerKind,
-    target_runner::TargetRunner,
-};
-// Reporting.
-pub use nextest_runner::{
-    helpers::{ShowTerminalProgress, ThemeCharacters, plural},
+    list::{
+        BinaryList, BinaryListState, ListProgressOptions, OutputFormat, OwnedTestInstanceId,
+        PackageInfo, RustBuildMeta, RustTestBinary, RustTestSuite, SerializableFormat,
+        TestBinaryInvocation, TestExecuteContext, TestInstance, TestInstanceId, TestList,
+        TestListState,
+    },
+    output_spec::{LiveSpec, OutputSpec},
+    partition::PartitionerBuilder,
+    platform::BuildPlatforms,
     reporter::{
-        Reporter, ReporterBuilder, ReporterOutput, ReporterStats, ShowProgress,
+        Reporter, ReporterBuilder, ReporterOutput, ReporterStats, ShowProgress, events,
         events::{FinalRunStats, ReporterEvent, RunStats},
         structured::StructuredReporter,
     },
-    write_str::WriteStr,
-};
-pub use nextest_runner::{
-    list::{
-        BinaryList, BinaryListState, PackageInfo, RustBuildMeta, RustTestBinary,
-        TestBinaryInvocation, TestListState,
-    },
-    partition::PartitionerBuilder,
-    platform::BuildPlatforms,
     reuse_build::PathMapper,
+    run_mode::NextestRunMode,
+    runner::{StressCount, TestRunner, TestRunnerBuilder, VersionEnvVars},
+    signal::SignalHandlerKind,
+    target_runner::TargetRunner,
     test_filter::{FilterBound, RunIgnored, TestFilter, TestFilterPatterns},
+    test_output::{ChildExecutionOutput, ChildOutput, ChildSingleOutput},
+    write_str::WriteStr,
 };
 pub use outcome::{NoTestsBehavior, RunFailure, final_outcome};
 pub use profile::{create_junit_store_dir, evaluate_profile};
