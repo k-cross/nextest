@@ -56,9 +56,6 @@ impl<'a> TestSession<'a> {
             path_mapper,
         } = inputs;
 
-        // Use the canonicalized workspace root from the path mapper if a remap
-        // was specified, so `NEXTEST_WORKSPACE_ROOT` is an absolute, normalized
-        // path consistent with `CARGO_MANIFEST_DIR`.
         let workspace_root = match path_mapper.new_workspace_root() {
             Some(canonical) => canonical.to_owned(),
             None => workspace_root,

@@ -39,8 +39,6 @@ fn buck_project() -> Option<Utf8PathBuf> {
 
 /// Runs `buck2 test` in the example project with this binary on `PATH`.
 fn buck2_test(project: &Utf8PathBuf, args: &[&str]) -> std::process::Output {
-    // The toolchain finds `buck2-nextest` on PATH, so point at the one this
-    // test was built alongside rather than whatever else is installed.
     let binary_dir = Utf8PathBuf::from(env!("CARGO_BIN_EXE_buck2-nextest"))
         .parent()
         .expect("the test binary has a parent directory")
@@ -75,15 +73,11 @@ fn the_example_project_passes() {
         output.status.code()
     );
 
-    // Buck2 renders one row per test rather than one per target, which is the
-    // whole point of running them through the internal runner.
     assert!(
         stderr.contains("Pass 6"),
         "every test is reported individually:\n{stderr}"
     );
 
-    // The ignored test is listed, then reported as skipped when Buck2 asks for
-    // it -- rather than quietly missing from the run.
     assert!(
         stderr.contains("Skip 1"),
         "the ignored test is reported as skipped:\n{stderr}"

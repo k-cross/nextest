@@ -90,7 +90,6 @@ pub fn final_outcome(
 ) -> Result<(), RunFailure> {
     let is_rerun = outstanding_not_seen_count.is_some();
 
-    // Handle the no-tests-run case first.
     match outcome {
         RunOutcome::NoTestsRun => match no_tests {
             Some(NoTestsBehavior::Pass) => return Ok(()),
@@ -104,8 +103,6 @@ pub fn final_outcome(
                     is_default: false,
                 });
             }
-            // For reruns, `Auto` and the default check outstanding tests
-            // below. For everything else they fail.
             Some(NoTestsBehavior::Auto) => {
                 if !is_rerun {
                     return Err(RunFailure::NoTestsRun {
@@ -125,7 +122,6 @@ pub fn final_outcome(
         },
         RunOutcome::Success => {}
         RunOutcome::Cancelled { step } | RunOutcome::Failed { step } => {
-            // Tests ran, and the run failed.
             return Err(match step {
                 RunFailureStep::SetupScript => RunFailure::SetupScriptFailed,
                 RunFailureStep::Test => RunFailure::TestRunFailed { rerun_available },
@@ -133,8 +129,6 @@ pub fn final_outcome(
         }
     }
 
-    // The run succeeded (or no tests ran on a rerun). Check for outstanding
-    // tests.
     match outstanding_not_seen_count {
         Some(0) => {
             info!("no outstanding tests remain");
@@ -320,7 +314,6 @@ mod tests {
             }),
         );
 
-        // With a recording, the failure can point at continuing the rerun.
         let result = final_outcome(NextestRunMode::Test, outcome, None, Some(2), true);
         assert_eq!(
             result,

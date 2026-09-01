@@ -67,8 +67,6 @@ pub(crate) fn to_binary_list(
     input: &TargetInput<'_>,
     project_root: &Utf8Path,
 ) -> Result<Buck2BinaryList> {
-    // No Cargo configuration to consult, so the host is the only platform
-    // there is anything to say about.
     let build_platforms = BuildPlatforms::new_with_no_target().map_err(|error| {
         ExpectedError::HostPlatformDetectError {
             error: Box::new(error),
@@ -80,28 +78,15 @@ pub(crate) fn to_binary_list(
     let package_id = PackageId::new(input.label.to_owned());
 
     let binary = RustTestBinary {
-        // Buck2 targets are identified by their label. Using it as the binary
-        // ID keeps nextest's output and `binary_id()` filtersets speaking
-        // Buck2's vocabulary rather than a synthesized Cargo-style name.
         id: RustBinaryId::new(input.label),
         path: resolve_path(project_root, input.program),
         package_id: input.label.to_owned(),
-        // Buck2 has no lib/bin/test distinction of Cargo's sort. Reporting
-        // these as `test` keeps `kind(test)` filtersets meaningful.
         kind: RustTestBinaryKind::TEST,
         name: name.clone(),
         build_platform: BuildPlatform::Target,
         invocation: TestBinaryInvocation {
             leading_args: input.leading_args.to_vec(),
-            // The rule's `env` is the action's environment, which this process
-            // already has and passes on to the test it spawns.
             env: Default::default(),
-            // Buck2 runs each action from the project root (see
-            // `run_from_project_root`), and the paths it hands a test through
-            // the environment -- `$(location ...)` and friends -- are relative
-            // to that root. So the test has to run where Buck2 put us, or none
-            // of them resolve. Nextest reports this same directory as
-            // `CARGO_MANIFEST_DIR`.
             cwd: Some(input.cwd.to_owned()),
         },
     };
@@ -121,9 +106,6 @@ pub(crate) fn to_binary_list(
         manifest_path: package_dir.join(BUCK_FILE_NAME),
     });
 
-    // Buck2 does not uplift artifacts or run Cargo build scripts, so the build
-    // metadata is empty apart from the platforms. `dylib_paths()` then yields
-    // just the rustc libdirs, which is what a Buck2-built test binary needs.
     let rust_build_meta: RustBuildMeta<BinaryListState> =
         RustBuildMeta::new(project_root, project_root, build_platforms);
 
@@ -231,8 +213,6 @@ mod tests {
         );
         assert_eq!(binary.invocation.leading_args, vec!["--flag"]);
 
-        // The manifest path still names the package, which is where the target
-        // was declared.
         let package_id = PackageId::new("root//app/tests:zebra".to_owned());
         let package = converted.packages.get(&package_id).expect("present");
         assert_eq!(package.manifest_path, "/project/app/tests/BUCK");
