@@ -909,7 +909,7 @@ impl App {
             ctx,
             profile,
             self.base.graph(),
-            self.base.packages(),
+            self.base.packages(&binary_list),
             self.base.workspace_root.clone(),
             binary_list,
             test_filter,

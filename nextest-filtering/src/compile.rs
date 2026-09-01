@@ -165,6 +165,15 @@ fn rdependencies_packages(
     set
 }
 
+/// Reports that a package predicate cannot be resolved without a package graph.
+fn package_graph_unavailable(
+    span: SourceSpan,
+    errors: &mut Vec<ParseSingleError>,
+) -> FiltersetLeaf {
+    errors.push(ParseSingleError::PackageGraphUnavailable(span));
+    FiltersetLeaf::Packages(HashSet::new())
+}
+
 fn compile_set_def(
     set: &ParsedLeaf,
     cx_cache: &ParseContextCache<'_>,
@@ -177,10 +186,9 @@ fn compile_set_def(
         // metadata. Without a package graph there is nothing to resolve them
         // to, so report that rather than silently matching no packages.
         ParsedLeaf::Package(matcher, span) => {
-            let Some(_) = cache else {
-                errors.push(ParseSingleError::PackageGraphUnavailable(*span));
-                return FiltersetLeaf::Packages(HashSet::new());
-            };
+            if !cx_cache.has_graph {
+                return package_graph_unavailable(*span, errors);
+            }
             FiltersetLeaf::Packages(expect_non_empty_packages(
                 matching_packages(matcher, &cx_cache.workspace_packages),
                 *span,
@@ -189,8 +197,7 @@ fn compile_set_def(
         }
         ParsedLeaf::Deps(matcher, span) => {
             let Some(cache) = cache else {
-                errors.push(ParseSingleError::PackageGraphUnavailable(*span));
-                return FiltersetLeaf::Packages(HashSet::new());
+                return package_graph_unavailable(*span, errors);
             };
             FiltersetLeaf::Packages(expect_non_empty_packages(
                 dependencies_packages(matcher, &cx_cache.workspace_packages, cache),
@@ -200,8 +207,7 @@ fn compile_set_def(
         }
         ParsedLeaf::Rdeps(matcher, span) => {
             let Some(cache) = cache else {
-                errors.push(ParseSingleError::PackageGraphUnavailable(*span));
-                return FiltersetLeaf::Packages(HashSet::new());
+                return package_graph_unavailable(*span, errors);
             };
             FiltersetLeaf::Packages(expect_non_empty_packages(
                 rdependencies_packages(matcher, &cx_cache.workspace_packages, cache),
