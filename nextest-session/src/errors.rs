@@ -7,10 +7,6 @@
 //! that a frontend can keep its own rendering and exit-code policy for each.
 
 use camino::Utf8PathBuf;
-// Every error a contract call can return is nameable here, including the ones
-// that appear only as a source inside the types below. Mapping the pipeline's
-// failures onto a frontend's own error type is the last thing that would
-// otherwise force a direct dependency on `nextest-runner`.
 pub use nextest_filtering::errors::FiltersetParseErrors;
 pub use nextest_runner::errors::{
     ConfigParseError, ConfigureHandleInheritanceError, CreateTestListError, FromMessagesError,

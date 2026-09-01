@@ -31,18 +31,12 @@ fn nextest_names_directories_absolutely() {
     let workspace_root = absolute_var("NEXTEST_WORKSPACE_ROOT");
     let manifest_dir = absolute_var("CARGO_MANIFEST_DIR");
 
-    // `.buckroot` marks the Buck2 project root, which is what nextest reads
-    // configuration from and what it reports as the workspace root.
     assert!(
         workspace_root.join(".buckroot").is_file(),
         "NEXTEST_WORKSPACE_ROOT names the project root, got `{}`",
         workspace_root.display()
     );
 
-    // Buck2 runs every action from the project root, and nextest reports the
-    // directory a test runs in as `CARGO_MANIFEST_DIR`. So both name the same
-    // place here -- which is what makes the project-relative paths Buck2 hands
-    // a test through the environment resolve.
     assert_eq!(
         manifest_dir, workspace_root,
         "CARGO_MANIFEST_DIR is where Buck2 ran the action"
