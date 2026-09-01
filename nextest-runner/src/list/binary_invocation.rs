@@ -80,21 +80,16 @@ impl TestBinaryInvocation {
     /// breaking change to that crate's stable API, so it waits for a release
     /// that can bump the version.
     ///
-    /// Nothing reaches this today: Cargo is the only thing that serializes a
-    /// binary list, and Cargo-built binaries have nothing to carry. A build
-    /// system integration that gained archive or recording support would, and
-    /// the binaries would come back missing their leading arguments,
-    /// environment, and working directory -- so this makes that loud rather
-    /// than silent.
+    /// Cargo-built binaries have nothing to carry, so Cargo never reaches this.
+    /// A build system integration that serializes a test list does, and its
+    /// binaries would come back missing their leading arguments, environment,
+    /// and working directory -- so this warns rather than dropping them
+    /// silently. It is a warning and not an assertion because the input is
+    /// ordinary user data, which a frontend is free to supply.
     pub(crate) fn warn_if_unrepresentable(&self, binary_id: &RustBinaryId) {
         if self.is_empty() {
             return;
         }
-        debug_assert!(
-            false,
-            "invocation details for `{binary_id}` cannot be serialized: \
-             nextest-metadata's summary types have no field for them"
-        );
         warn!(
             "invocation details for `{binary_id}` are not serialized, so a test list read \
              back from this output will invoke it without them"

@@ -19,7 +19,7 @@ pub fn add(left: u64, right: u64) -> u64 {
 /// The path comes from `DEMO_GREETING_PATH`, which `BUCK` sets to
 /// `$(location :greeting)`. Buck2 writes that path relative to the project
 /// root, so this only resolves if the test's working directory is the project
-/// root -- see the note on working directories in `README.md`.
+/// root, which is where Buck2 runs every action.
 pub fn greeting() -> String {
     let path = env::var("DEMO_GREETING_PATH")
         .expect("DEMO_GREETING_PATH is set by the BUCK file's `env` attribute");
@@ -47,9 +47,9 @@ mod tests {
         assert_eq!(add(41, 0), 41);
     }
 
-    /// Ignored so that `--run-ignored` has something to demonstrate.
+    /// Ignored so that the listing has a test Buck2 reports as skipped.
     #[test]
-    #[ignore = "demonstrates --run-ignored"]
+    #[ignore = "reported as skipped rather than missing from the run"]
     fn add_saturates_at_the_maximum() {
         assert_eq!(u64::MAX.checked_add(1), None);
     }
