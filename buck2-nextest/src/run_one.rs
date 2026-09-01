@@ -19,7 +19,7 @@ use nextest_session::{
     FilterBound, InputHandlerKind, NextestExitCode, NextestRunMode, Reporter, ReporterBuilder,
     ReporterEvent, ReporterOutput, RunIgnored, ShowTerminalProgress, SignalHandlerKind,
     StructuredReporter, TestFilter, TestFilterPatterns, TestRunnerBuilder, WriteStr,
-    errors::ExecuteError, events::TestEventKind, run_to_completion,
+    errors::ExecuteError, events::TestEventKind, into_report_errors, run_to_completion,
 };
 use std::convert::Infallible;
 
@@ -71,20 +71,30 @@ pub(crate) fn run_one(
     );
 
     let mut result: Option<TestResult> = None;
-    run_to_completion(runner, reporter, false, |event| {
+    let executed = run_to_completion(runner, reporter, false, |event| {
         capture(&cx.label, test_name, event, &mut result);
         Ok::<(), Infallible>(())
     })
-    .map_err(
-        |error: ExecuteError<Infallible>| ExpectedError::WriteEventError {
-            error: std::io::Error::other(error.to_string()),
+    .map_err(|error: ExecuteError<Infallible>| match error {
+        ExecuteError::ConfigureHandleInheritance(error) => {
+            ExpectedError::ConfigureHandleInheritance { error }
+        }
+        ExecuteError::Execute(errors) => ExpectedError::TestRunExecuteError {
+            error: into_report_errors(errors),
         },
-    )?;
+    })?;
 
     let Some(result) = result else {
-        return Err(ExpectedError::TestNotFound {
-            label: cx.label.clone(),
-            test_name: test_name.to_owned(),
+        return Err(match executed.run_stats.cancel_reason {
+            Some(reason) => ExpectedError::RunCancelled {
+                label: cx.label.clone(),
+                test_name: test_name.to_owned(),
+                reason,
+            },
+            None => ExpectedError::TestNotFound {
+                label: cx.label.clone(),
+                test_name: test_name.to_owned(),
+            },
         });
     };
 

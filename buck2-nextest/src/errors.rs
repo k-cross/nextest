@@ -8,9 +8,11 @@ use miette::Diagnostic;
 use nextest_session::{
     NextestExitCode,
     errors::{
-        ConfigParseError, CreateTestListError, FromMessagesError, ProfileNotFound,
-        StoreDirCreateError, TestFilterBuildError, TestRunnerBuildError,
+        ConfigParseError, ConfigureHandleInheritanceError, CreateTestListError, FromMessagesError,
+        ProfileNotFound, StoreDirCreateError, TestFilterBuildError, TestRunnerBuildError,
+        TestRunnerExecuteErrors, WriteEventError,
     },
+    events::CancelReason,
 };
 use thiserror::Error;
 
@@ -157,6 +159,40 @@ pub enum ExpectedError {
         #[source]
         error: std::io::Error,
     },
+
+    /// Configuring how file handles are inherited failed.
+    #[error("failed to configure handle inheritance")]
+    ConfigureHandleInheritance {
+        /// The underlying error.
+        #[source]
+        error: ConfigureHandleInheritanceError,
+    },
+
+    /// The runner failed to execute tests or to report their results.
+    #[error("failed to execute tests")]
+    TestRunExecuteError {
+        /// The underlying errors.
+        #[source]
+        error: TestRunnerExecuteErrors<WriteEventError>,
+    },
+
+    /// The run ended before the test Buck2 asked for reported a result.
+    ///
+    /// The test was in the listing, so unlike [`Self::TestNotFound`] the two
+    /// agree; something stopped the run first, and that cause is what the user
+    /// needs to see.
+    #[error("the run was cancelled ({reason}) before `{test_name}` in `{label}` reported a result")]
+    #[diagnostic(help(
+        "this is not a stale listing; look for the failure that cancelled the run above"
+    ))]
+    RunCancelled {
+        /// The target the test was expected in.
+        label: String,
+        /// The test name Buck2 asked for.
+        test_name: String,
+        /// Why the run was cancelled.
+        reason: CancelReason,
+    },
 }
 
 impl ExpectedError {
@@ -179,9 +215,14 @@ impl ExpectedError {
             Self::FromMessagesError { .. }
             | Self::CreateTestListError { .. }
             | Self::TestNotFound { .. } => NextestExitCode::TEST_LIST_CREATION_FAILED,
-            Self::ResultSerializeError { .. } | Self::WriteEventError { .. } => {
-                NextestExitCode::WRITE_OUTPUT_ERROR
-            }
+            Self::ConfigureHandleInheritance { .. } => NextestExitCode::SETUP_ERROR,
+            Self::RunCancelled { reason, .. } => match reason {
+                CancelReason::SetupScriptFailure => NextestExitCode::SETUP_SCRIPT_FAILED,
+                _ => NextestExitCode::TEST_RUN_FAILED,
+            },
+            Self::ResultSerializeError { .. }
+            | Self::WriteEventError { .. }
+            | Self::TestRunExecuteError { .. } => NextestExitCode::WRITE_OUTPUT_ERROR,
         }
     }
 }

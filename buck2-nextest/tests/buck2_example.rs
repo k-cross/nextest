@@ -43,10 +43,10 @@ fn buck2_test(project: &Utf8PathBuf, args: &[&str]) -> std::process::Output {
         .parent()
         .expect("the test binary has a parent directory")
         .to_owned();
-    let path = match std::env::var("PATH") {
-        Ok(existing) => format!("{binary_dir}:{existing}"),
-        Err(_) => binary_dir.to_string(),
-    };
+    let existing = std::env::var_os("PATH").unwrap_or_default();
+    let mut dirs = vec![binary_dir.into_std_path_buf()];
+    dirs.extend(std::env::split_paths(&existing));
+    let path = std::env::join_paths(dirs).expect("no PATH entry contains the path separator");
 
     Command::new("buck2")
         .current_dir(project)
