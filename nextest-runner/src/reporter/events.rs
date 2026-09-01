@@ -2314,6 +2314,7 @@ impl fmt::Display for CancelReason {
         f.write_str(self.to_static_str())
     }
 }
+
 /// The kind of unit of work that nextest is executing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UnitKind {

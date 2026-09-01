@@ -13,12 +13,15 @@
 use crate::{
     convert::{TargetInput, to_binary_list},
     errors::Result,
+    list::list,
     pipeline::Context,
     project_root,
+    run_one::run_one,
 };
 use camino::Utf8PathBuf;
 use clap::{Args, Parser, Subcommand};
 use nextest_session::WriteStr;
+use std::collections::BTreeMap;
 
 /// A nextest client for Buck2's internal test runner.
 #[derive(Debug, Parser)]
@@ -60,6 +63,15 @@ struct TargetArgs {
     /// value rather than being mistaken for an argument of this binary.
     #[arg(long = "arg", value_name = "ARG", allow_hyphen_values = true)]
     args: Vec<String>,
+
+    /// An environment variable to set for the test, as `KEY=VALUE`.
+    ///
+    /// These come from the target's own `env`, and are applied to the test
+    /// process in both the list and run phases. They are passed here rather
+    /// than set on this process so that a variable a target sets for its test
+    /// cannot reconfigure nextest itself. Repeating a name keeps the last one.
+    #[arg(long = "env", value_name = "KEY=VALUE", value_parser = parse_env_pair)]
+    env: Vec<(String, String)>,
 
     /// The Buck2 project root.
     ///
@@ -105,15 +117,28 @@ impl App {
         match self.command {
             Command::List(args) => {
                 let cx = args.target.into_context()?;
-                crate::list::list(&cx, writer)?;
+                list(&cx, writer)?;
                 Ok(0)
             }
             Command::Run(args) => {
                 let test_name = args.test_name;
                 let cx = args.target.into_context()?;
-                crate::run_one::run_one(&cx, &test_name, cli_args, writer)
+                run_one(&cx, &test_name, cli_args, writer)
             }
         }
+    }
+}
+
+/// Splits a `KEY=VALUE` argument, which is how Buck2's rule passes a target's
+/// environment through.
+///
+/// The value may contain `=` and may be empty; only the first separator is
+/// meaningful, since a variable name cannot contain one.
+fn parse_env_pair(value: &str) -> Result<(String, String), String> {
+    match value.split_once('=') {
+        Some(("", _)) => Err(format!("`{value}` has an empty variable name")),
+        Some((name, value)) => Ok((name.to_owned(), value.to_owned())),
+        None => Err(format!("`{value}` is not of the form KEY=VALUE")),
     }
 }
 
@@ -122,12 +147,14 @@ impl TargetArgs {
     fn into_context(self) -> Result<Context> {
         let cwd = project_root::current_dir()?;
         let project_root = project_root::resolve(self.project_root.as_deref(), &cwd)?;
+        let env: BTreeMap<String, String> = self.env.into_iter().collect();
         let binaries = to_binary_list(
             &TargetInput {
                 label: &self.label,
                 package_path: &self.package_path,
                 program: &self.program,
                 leading_args: &self.args,
+                env: &env,
                 cwd: &cwd,
             },
             &project_root,

@@ -35,6 +35,7 @@ pub(crate) struct LocalExecuteContext<'a> {
     pub(crate) rust_build_meta: &'a RustBuildMeta<TestListState>,
     pub(crate) double_spawn: &'a DoubleSpawnInfo,
     pub(crate) dylib_path: &'a OsStr,
+    pub(crate) build_dylib_paths: &'a [Utf8PathBuf],
     pub(crate) profile_name: &'a str,
     pub(crate) env: &'a EnvironmentMap,
 }
@@ -373,11 +374,7 @@ fn suite_dylib_path<'a>(
     suite_env: &BTreeMap<String, String>,
 ) -> Cow<'a, OsStr> {
     match suite_env.get(dylib_path_envvar()) {
-        Some(suite_value) => merge_dylib_path(
-            &lctx.rust_build_meta.dylib_paths(),
-            suite_value,
-            lctx.dylib_path,
-        ),
+        Some(suite_value) => merge_dylib_path(lctx.build_dylib_paths, suite_value, lctx.dylib_path),
         None => Cow::Borrowed(lctx.dylib_path),
     }
 }

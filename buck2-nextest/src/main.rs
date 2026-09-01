@@ -4,7 +4,7 @@
 use buck2_nextest::App;
 use clap::Parser;
 use nextest_session::WriteStr;
-use std::io::Write;
+use std::io::{self, Write};
 use tracing_subscriber::{
     Layer,
     filter::{LevelFilter, Targets},
@@ -33,7 +33,7 @@ fn init_logging() {
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::fmt::layer()
-                .with_writer(std::io::stderr)
+                .with_writer(io::stderr)
                 .without_time()
                 .with_target(false)
                 .with_filter(targets),
@@ -46,7 +46,7 @@ fn main() -> std::process::ExitCode {
     let cli_args: Vec<String> = std::env::args().collect();
     let app = App::parse();
 
-    let mut stdout = std::io::stdout();
+    let mut stdout = io::stdout();
     let mut writer = StdoutWriter(&mut stdout);
 
     match app.exec(&mut writer, cli_args) {
@@ -59,14 +59,14 @@ fn main() -> std::process::ExitCode {
     }
 }
 
-struct StdoutWriter<'a>(&'a mut std::io::Stdout);
+struct StdoutWriter<'a>(&'a mut io::Stdout);
 
 impl WriteStr for StdoutWriter<'_> {
-    fn write_str(&mut self, s: &str) -> std::io::Result<()> {
+    fn write_str(&mut self, s: &str) -> io::Result<()> {
         self.0.write_all(s.as_bytes())
     }
 
-    fn write_str_flush(&mut self) -> std::io::Result<()> {
+    fn write_str_flush(&mut self) -> io::Result<()> {
         self.0.flush()
     }
 }

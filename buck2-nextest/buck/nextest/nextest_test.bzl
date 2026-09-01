@@ -16,7 +16,9 @@ and implementation -- but returns `InternalRunnerTestInfo` in place of
 Buck2 keeps everything that spans tests: scheduling, concurrency, caching, and
 the results UI. Nextest keeps everything within a test, because `run` drives
 the real nextest pipeline -- the profile's retries, slow-test handling, leak
-detection, and the environment a test sees.
+detection, and the environment a test sees. The target's own `env` is part of
+that last one: it is handed to `buck2-nextest` as `--env` rather than set on the
+action, so it lands on the test process and cannot reconfigure the runner.
 
 The callbacks are pure Starlark and cannot run anything, so all the judgement
 lives in `buck2-nextest` and they are left as `json.decode`.
@@ -81,6 +83,15 @@ def _nextest_test_impl(ctx: AnalysisContext) -> list[Provider]:
     ]
     for arg in harness[1:]:
         common += ["--arg", arg]
+
+    # The target's environment is passed to `buck2-nextest` as data rather than
+    # set on the action, so it reaches the test process and nothing else. Set on
+    # the action it would also be the environment `buck2-nextest` itself reads,
+    # where a target's `NEXTEST_PROFILE` or `NEXTEST_LOG` would reconfigure the
+    # runner instead of describing what its test needs.
+    for name, value in external.env.items():
+        common += ["--env", cmd_args(name, value, delimiter = "=")]
+
     if toolchain.profile != None:
         common += ["--profile", toolchain.profile]
     if toolchain.config_file != None:
@@ -97,7 +108,9 @@ def _nextest_test_impl(ctx: AnalysisContext) -> list[Provider]:
         command = [toolchain.nextest, "run"] + common + ["--test-name"],
         parse_test_listing = _parse_test_listing,
         parse_test_result = _parse_test_result,
-        env = external.env,
+        # Passed above as `--env` instead, so the target's environment applies
+        # to the test process rather than to `buck2-nextest`.
+        env = {},
         # Passed through so `buck2 test --include` and `--exclude` keep working.
         labels = external.labels,
         contacts = external.contacts,
