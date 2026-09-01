@@ -248,6 +248,7 @@ pub struct TestList<'g> {
     workspace_root: Utf8PathBuf,
     env: EnvironmentMap,
     updated_dylib_path: OsString,
+    build_dylib_paths: Vec<Utf8PathBuf>,
     // Computed on first access.
     skip_counts: OnceLock<SkipCounts>,
 }
@@ -272,7 +273,7 @@ impl<'g> TestList<'g> {
         I: IntoIterator<Item = RustTestArtifact<'g>>,
         I::IntoIter: Send,
     {
-        let updated_dylib_path = Self::create_dylib_path(&rust_build_meta)?;
+        let (updated_dylib_path, build_dylib_paths) = Self::create_dylib_path(&rust_build_meta)?;
         debug!(
             "updated {}: {}",
             dylib_path_envvar(),
@@ -288,6 +289,7 @@ impl<'g> TestList<'g> {
             rust_build_meta: &rust_build_meta,
             double_spawn: ctx.double_spawn,
             dylib_path: &updated_dylib_path,
+            build_dylib_paths: &build_dylib_paths,
             profile_name: ctx.profile_name,
             env: &env,
         };
@@ -401,6 +403,7 @@ impl<'g> TestList<'g> {
             env,
             rust_build_meta,
             updated_dylib_path,
+            build_dylib_paths,
             test_count,
             skip_counts: OnceLock::new(),
         })
@@ -421,7 +424,7 @@ impl<'g> TestList<'g> {
         ecx: &EvalContext<'_>,
         bound: FilterBound,
     ) -> Result<Self, CreateTestListError> {
-        let updated_dylib_path = Self::create_dylib_path(&rust_build_meta)?;
+        let (updated_dylib_path, build_dylib_paths) = Self::create_dylib_path(&rust_build_meta)?;
 
         let parsed_binaries = test_bin_outputs
             .into_iter()
@@ -461,6 +464,7 @@ impl<'g> TestList<'g> {
             env,
             rust_build_meta,
             updated_dylib_path,
+            build_dylib_paths,
             test_count,
             skip_counts: OnceLock::new(),
         })
@@ -486,6 +490,7 @@ impl<'g> TestList<'g> {
 
         // For replay, we don't need the actual dylib path since we're not executing tests.
         let updated_dylib_path = OsString::new();
+        let build_dylib_paths = Vec::new();
 
         // Build test suites from the summary.
         let mut rust_suites = IdOrdMap::new();
@@ -555,6 +560,7 @@ impl<'g> TestList<'g> {
             env,
             rust_build_meta,
             updated_dylib_path,
+            build_dylib_paths,
             test_count,
             skip_counts: OnceLock::new(),
         })
@@ -759,6 +765,7 @@ impl<'g> TestList<'g> {
             rust_build_meta: RustBuildMeta::empty(),
             env: EnvironmentMap::empty(),
             updated_dylib_path: OsString::new(),
+            build_dylib_paths: Vec::new(),
             rust_suites: IdOrdMap::new(),
             skip_counts: OnceLock::new(),
         }
@@ -766,7 +773,7 @@ impl<'g> TestList<'g> {
 
     pub(crate) fn create_dylib_path(
         rust_build_meta: &RustBuildMeta<TestListState>,
-    ) -> Result<OsString, CreateTestListError> {
+    ) -> Result<(OsString, Vec<Utf8PathBuf>), CreateTestListError> {
         let dylib_path = dylib_path();
         let dylib_path_is_empty = dylib_path.is_empty();
         let new_paths = rust_build_meta.dylib_paths();
@@ -794,8 +801,10 @@ impl<'g> TestList<'g> {
             updated_dylib_path.push("/usr/lib".into());
         }
 
-        std::env::join_paths(updated_dylib_path)
-            .map_err(move |error| CreateTestListError::dylib_join_paths(new_paths, error))
+        match std::env::join_paths(updated_dylib_path) {
+            Ok(joined) => Ok((joined, new_paths)),
+            Err(error) => Err(CreateTestListError::dylib_join_paths(new_paths, error)),
+        }
     }
 
     /// Parses test binary output into a [`ParsedTestBinary`] without
@@ -1666,6 +1675,7 @@ impl<'a> TestInstance<'a> {
             rust_build_meta: &test_list.rust_build_meta,
             double_spawn: ctx.double_spawn,
             dylib_path: test_list.updated_dylib_path(),
+            build_dylib_paths: &test_list.build_dylib_paths,
             profile_name: ctx.profile_name,
             env: &test_list.env,
         };

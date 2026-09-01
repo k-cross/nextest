@@ -1,6 +1,8 @@
 // Copyright (c) The nextest Contributors
 // SPDX-License-Identifier: MIT OR Apache-2.0
 
+#![warn(missing_docs)]
+
 //! The build-system integration pipeline for nextest.
 //!
 //! Nextest's runner does not care who built the test binaries. This crate is

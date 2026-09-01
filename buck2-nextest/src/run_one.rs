@@ -58,7 +58,7 @@ pub(crate) fn run_one(
         )
         .map_err(|error| ExpectedError::TestRunnerBuildError { error })?;
 
-    let mut plain_stderr = PlainStderrWriter;
+    let mut plain_stderr = PlainStderrWriter::new();
     let reporter: Reporter<'_> = ReporterBuilder::default().build(
         session.test_list(),
         &profile,
@@ -77,7 +77,7 @@ pub(crate) fn run_one(
     })
     .map_err(|error: ExecuteError<Infallible>| match error {
         ExecuteError::ConfigureHandleInheritance(error) => {
-            ExpectedError::ConfigureHandleInheritance { error }
+            ExpectedError::ConfigureHandleInheritanceError { error }
         }
         ExecuteError::Execute(errors) => ExpectedError::TestRunExecuteError {
             error: into_report_errors(errors),

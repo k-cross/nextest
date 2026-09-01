@@ -127,6 +127,13 @@ same directory as `CARGO_MANIFEST_DIR`, and the project root as an absolute
 `NEXTEST_WORKSPACE_ROOT`. This is what makes the project-relative paths Buck2 hands a test through
 the environment — `$(location ...)` and friends — resolve.
 
+A target's `env` is applied to the test process, in both the listing and run phases. A
+[wrapper script](../configuration/wrapper-scripts.md)'s environment overrides it, as do the
+[variables nextest sets](../configuration/env-vars.md) for every test. The rule passes it to
+`buck2-nextest` as data rather than setting it on the action, so a target that sets
+`NEXTEST_PROFILE` or `NEXTEST_LOG` describes what its own test needs instead of reconfiguring the
+runner.
+
 ## Ignored tests
 
 An `#[ignore]`d test is listed rather than hidden, and reported as skipped when Buck2 asks for it.

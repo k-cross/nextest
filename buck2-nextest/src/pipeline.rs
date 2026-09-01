@@ -20,10 +20,8 @@ use nextest_session::{
     ShowProgress, ShowTerminalProgress, TestFilter, TestListOptions, TestSession, ThemeCharacters,
     WriteStr, errors::SessionBuildError, evaluate_profile, force_or_new_run_id,
 };
-use std::{
-    io::{IsTerminal, Write},
-    sync::Arc,
-};
+use semver::Version;
+use std::io::{self, IsTerminal, Write};
 
 /// Everything both modes need to reach the pipeline.
 #[derive(Debug)]
@@ -95,8 +93,7 @@ impl Context {
     pub(crate) fn session_context(&self) -> SessionContext {
         SessionContext::simple(
             force_or_new_run_id(),
-            semver::Version::parse(env!("CARGO_PKG_VERSION"))
-                .expect("crate version is valid semver"),
+            Version::parse(env!("CARGO_PKG_VERSION")).expect("crate version is valid semver"),
         )
     }
 
@@ -112,7 +109,7 @@ impl Context {
             ctx,
             profile,
             SessionInputs {
-                binary_list: Arc::new(self.binaries.binary_list.clone()),
+                binary_list: self.binaries.binary_list.clone(),
                 packages: &self.binaries.packages,
                 workspace_root: self.project_root.clone(),
                 env: EnvironmentMap::empty(),
@@ -128,7 +125,7 @@ impl Context {
                     ShowProgress::default(),
                     ShowTerminalProgress::No,
                     ThemeCharacters::default(),
-                    std::io::stderr().is_terminal(),
+                    io::stderr().is_terminal(),
                 ),
             },
         )
@@ -146,14 +143,20 @@ impl Context {
 /// Buck2 captures each action's standard error and shows it alongside the
 /// result, so this is the detail view for a test -- which is why it is written
 /// without a progress bar or any other cursor control.
-pub(crate) struct PlainStderrWriter;
+pub(crate) struct PlainStderrWriter(io::Stderr);
+
+impl PlainStderrWriter {
+    pub(crate) fn new() -> Self {
+        Self(io::stderr())
+    }
+}
 
 impl WriteStr for PlainStderrWriter {
-    fn write_str(&mut self, s: &str) -> std::io::Result<()> {
-        std::io::stderr().write_all(s.as_bytes())
+    fn write_str(&mut self, s: &str) -> io::Result<()> {
+        self.0.write_all(s.as_bytes())
     }
 
-    fn write_str_flush(&mut self) -> std::io::Result<()> {
-        std::io::stderr().flush()
+    fn write_str_flush(&mut self) -> io::Result<()> {
+        self.0.flush()
     }
 }

@@ -19,6 +19,7 @@ use nextest_session::{
     RustBinaryId, RustBuildMeta, RustTestBinary, RustTestBinaryKind, TestBinaryInvocation,
 };
 use semver::Version;
+use std::{collections::BTreeMap, sync::Arc};
 
 /// The name Buck2 uses for its build files.
 ///
@@ -43,6 +44,9 @@ pub(crate) struct TargetInput<'a> {
     /// Arguments that belong before nextest's own, from the harness command.
     pub(crate) leading_args: &'a [String],
 
+    /// The target's own environment, applied to the test process.
+    pub(crate) env: &'a BTreeMap<String, String>,
+
     /// The directory Buck2 ran this action in, which is where the test runs.
     pub(crate) cwd: &'a Utf8Path,
 }
@@ -54,7 +58,7 @@ pub(crate) struct TargetInput<'a> {
 #[derive(Debug)]
 pub(crate) struct Buck2BinaryList {
     /// The binary to list or run.
-    pub(crate) binary_list: BinaryList,
+    pub(crate) binary_list: Arc<BinaryList>,
 
     /// The package the binary belongs to, keyed by the target label.
     pub(crate) packages: IdOrdMap<PackageInfo>,
@@ -86,7 +90,7 @@ pub(crate) fn to_binary_list(
         build_platform: BuildPlatform::Target,
         invocation: TestBinaryInvocation {
             leading_args: input.leading_args.to_vec(),
-            env: Default::default(),
+            env: input.env.clone(),
             cwd: Some(input.cwd.to_owned()),
         },
     };
@@ -110,10 +114,10 @@ pub(crate) fn to_binary_list(
         RustBuildMeta::new(project_root, project_root, build_platforms);
 
     Ok(Buck2BinaryList {
-        binary_list: BinaryList {
+        binary_list: Arc::new(BinaryList {
             rust_build_meta,
             rust_binaries: vec![binary],
-        },
+        }),
         packages,
     })
 }
@@ -159,12 +163,14 @@ mod tests {
 
     fn convert(label: &str, package_path: &str, program: &str) -> Buck2BinaryList {
         let args = vec!["--flag".to_owned()];
+        let env = BTreeMap::from([("ZEBRA".to_owned(), "stripes".to_owned())]);
         to_binary_list(
             &TargetInput {
                 label,
                 package_path,
                 program: Utf8Path::new(program),
                 leading_args: &args,
+                env: &env,
                 cwd: Utf8Path::new("/project"),
             },
             Utf8Path::new("/project"),
@@ -212,6 +218,11 @@ mod tests {
             Some(Utf8Path::new("/project"))
         );
         assert_eq!(binary.invocation.leading_args, vec!["--flag"]);
+        assert_eq!(
+            binary.invocation.env.get("ZEBRA").map(String::as_str),
+            Some("stripes"),
+            "the target's environment reaches the invocation"
+        );
 
         let package_id = PackageId::new("root//app/tests:zebra".to_owned());
         let package = converted.packages.get(&package_id).expect("present");
