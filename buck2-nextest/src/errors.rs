@@ -162,7 +162,7 @@ pub enum ExpectedError {
 
     /// Configuring how file handles are inherited failed.
     #[error("failed to configure handle inheritance")]
-    ConfigureHandleInheritance {
+    ConfigureHandleInheritanceError {
         /// The underlying error.
         #[source]
         error: ConfigureHandleInheritanceError,
@@ -211,11 +211,11 @@ impl ExpectedError {
             | Self::ProfileNotFound { .. }
             | Self::TestFilterBuildError { .. }
             | Self::TestRunnerBuildError { .. }
-            | Self::StoreDirCreateError { .. } => NextestExitCode::SETUP_ERROR,
+            | Self::StoreDirCreateError { .. }
+            | Self::ConfigureHandleInheritanceError { .. } => NextestExitCode::SETUP_ERROR,
             Self::FromMessagesError { .. }
             | Self::CreateTestListError { .. }
             | Self::TestNotFound { .. } => NextestExitCode::TEST_LIST_CREATION_FAILED,
-            Self::ConfigureHandleInheritance { .. } => NextestExitCode::SETUP_ERROR,
             Self::RunCancelled { reason, .. } => match reason {
                 CancelReason::SetupScriptFailure => NextestExitCode::SETUP_SCRIPT_FAILED,
                 _ => NextestExitCode::TEST_RUN_FAILED,

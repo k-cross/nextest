@@ -25,8 +25,10 @@ use nextest_session::{
         ChildExecutionOutputDescription, ChildOutputDescription, ExecuteStatus,
         ExecutionDescription, ExecutionResultDescription, ExecutionStatuses,
     },
+    plural,
 };
 use serde::Serialize;
+use std::time::Duration;
 use swrite::{SWrite, swrite};
 
 /// One entry in the listing Buck2 reads.
@@ -103,7 +105,7 @@ pub(crate) fn result_from_finished(
     let duration = run_statuses
         .iter()
         .map(|status| status.time_taken)
-        .sum::<std::time::Duration>()
+        .sum::<Duration>()
         .as_secs_f64();
 
     let (status, message, details) = match run_statuses.describe() {
@@ -115,15 +117,21 @@ pub(crate) fn result_from_finished(
             prior_statuses,
             result,
         } => {
-            let attempts = last_status.retry_data.total_attempts;
             let attempt = last_status.retry_data.attempt;
-            let message = format!(
-                "flaky: passed on attempt {attempt} of {attempts}, after {} failed",
-                prior_statuses.len()
-            );
-            let status = match result {
-                nextest_session::FlakyResult::Pass => BuckTestStatus::Pass,
-                nextest_session::FlakyResult::Fail => BuckTestStatus::Fail,
+            let total_attempts = last_status.retry_data.total_attempts;
+            let (status, message) = match result.fail_message(attempt, total_attempts) {
+                Some(message) => (BuckTestStatus::Fail, message),
+                None => {
+                    let failed = prior_statuses.len();
+                    (
+                        BuckTestStatus::Pass,
+                        format!(
+                            "flaky: passed on attempt {attempt} of {total_attempts}, \
+                             after {failed} failed {}",
+                            plural::attempts_str(failed),
+                        ),
+                    )
+                }
             };
             let details = prior_statuses.last().and_then(details_for);
             (status, Some(message), details)
@@ -172,10 +180,6 @@ pub(crate) fn result_from_skipped(
 fn failure_status(status: &ExecuteStatus<LiveSpec>) -> BuckTestStatus {
     match &status.result {
         ExecutionResultDescription::Timeout { .. } => BuckTestStatus::Timeout,
-        ExecutionResultDescription::Pass
-        | ExecutionResultDescription::Leak { .. }
-        | ExecutionResultDescription::Fail { .. }
-        | ExecutionResultDescription::ExecFail => BuckTestStatus::Fail,
         _ => BuckTestStatus::Fail,
     }
 }
@@ -193,9 +197,6 @@ fn tolerated_message(status: &ExecuteStatus<LiveSpec>) -> Option<String> {
         ExecutionResultDescription::Timeout { .. } => {
             Some("test timed out, which this profile treats as a pass".to_owned())
         }
-        ExecutionResultDescription::Pass
-        | ExecutionResultDescription::Fail { .. }
-        | ExecutionResultDescription::ExecFail => None,
         _ => None,
     }
 }
@@ -210,7 +211,6 @@ fn failure_message(status: &ExecuteStatus<LiveSpec>) -> Option<String> {
         (Some(summary), _) => summary.short_message.clone(),
         (None, Some(slice)) => slice.slice.clone(),
         (None, None) => match &status.result {
-            ExecutionResultDescription::Fail { .. } => "test failed".to_owned(),
             ExecutionResultDescription::ExecFail => "the test process failed to start".to_owned(),
             ExecutionResultDescription::Timeout { .. } => {
                 "test exceeded the slow timeout and was terminated".to_owned()

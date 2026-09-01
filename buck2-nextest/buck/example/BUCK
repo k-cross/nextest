@@ -26,9 +26,8 @@ nextest_test(
     edition = "2024",
 )
 
-# Integration tests. The `env` here is passed through to `InternalRunnerTestInfo`, so Buck2 sets it
-# on each test's action; `$(location :greeting)` also makes the generated file an input, so it is
-# materialized before the tests run.
+# Integration tests. The `env` here reaches the test process, and `$(location :greeting)` makes the
+# generated file an input of the commands that carry it, so it is materialized before the tests run.
 nextest_test(
     name = "demo-integration-test",
     srcs = ["tests/integration.rs"],

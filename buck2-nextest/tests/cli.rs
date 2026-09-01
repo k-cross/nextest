@@ -35,6 +35,14 @@ mod tests {
     fn is_ignored() {}
 
     #[test]
+    fn reads_target_env() {
+        assert_eq!(
+            std::env::var("BUCK2_NEXTEST_TARGET_ENV").as_deref(),
+            Ok("from=the=target"),
+        );
+    }
+
+    #[test]
     fn flaky() {
         let marker = std::env::var("BUCK2_NEXTEST_FLAKY_MARKER")
             .expect("the marker path is set");
@@ -180,6 +188,10 @@ fn lists_every_test_including_ignored_ones() {
             ("root//app:harness - tests::flaky", "tests::flaky"),
             ("root//app:harness - tests::is_ignored", "tests::is_ignored"),
             ("root//app:harness - tests::passes", "tests::passes"),
+            (
+                "root//app:harness - tests::reads_target_env",
+                "tests::reads_target_env",
+            ),
         ]
     );
 }
@@ -296,6 +308,27 @@ fn retries_make_a_flaky_test_pass() {
     );
 }
 
+/// A profile that fails flaky tests reports the FAIL Buck2 will act on, and a
+/// message that says why it failed rather than one describing the pass.
+#[test]
+fn a_flaky_test_fails_when_the_profile_says_so() {
+    let fixture =
+        Fixture::new("[profile.strict]\nretries = 2\nflaky-result = 'fail'\n[profile.default]\n");
+    let (result, code) = fixture.run_test("tests::flaky", &["-P", "strict"]);
+
+    assert_eq!(string(&result, "status"), "FAIL");
+    assert_ne!(code, 0);
+    let message = string(&result, "message");
+    assert!(
+        message.contains("configured to fail when flaky"),
+        "the message explains the failure rather than claiming a pass: {result}"
+    );
+    assert!(
+        !message.contains("flaky: passed"),
+        "a FAIL is never reported with the message for a pass: {result}"
+    );
+}
+
 /// Without retries the same test simply fails, which is what makes the previous
 /// test evidence that retries ran rather than that the test is not flaky.
 #[test]
@@ -305,6 +338,55 @@ fn a_flaky_test_fails_without_retries() {
 
     assert_eq!(string(&result, "status"), "FAIL");
     assert_eq!(code, 100);
+}
+
+/// A target's environment reaches the test process, which is what lets a Buck2
+/// target describe what its test needs rather than setting it on the runner.
+#[test]
+fn the_targets_environment_reaches_the_test() {
+    let fixture = Fixture::new(PLAIN_CONFIG);
+    let (result, code) = fixture.run_test(
+        "tests::reads_target_env",
+        &["--env", "BUCK2_NEXTEST_TARGET_ENV=from=the=target"],
+    );
+
+    assert_eq!(string(&result, "status"), "PASS", "{result}");
+    assert_eq!(code, 0);
+}
+
+/// Without the flag the same test fails, which is what makes the previous test
+/// evidence that `--env` carried the value rather than something else having
+/// set it.
+#[test]
+fn a_test_needing_target_environment_fails_without_it() {
+    let fixture = Fixture::new(PLAIN_CONFIG);
+    let (result, code) = fixture.run_test("tests::reads_target_env", &[]);
+
+    assert_eq!(string(&result, "status"), "FAIL");
+    assert_eq!(code, 100);
+}
+
+/// A malformed `--env` is rejected rather than being dropped in silence, which
+/// would leave the test running without something it was told it would have.
+#[test]
+fn a_malformed_env_pair_is_rejected() {
+    let fixture = Fixture::new(PLAIN_CONFIG);
+    let output = fixture.run(&[
+        "run",
+        "--env",
+        "no-equals-sign",
+        "--test-name",
+        "tests::passes",
+    ]);
+
+    assert!(!output.status.success(), "a bare name is rejected");
+    assert!(output.stdout.is_empty(), "nothing is reported to Buck2");
+
+    let empty_name = fixture.run(&["run", "--env", "=value", "--test-name", "tests::passes"]);
+    assert!(
+        !empty_name.status.success(),
+        "an empty variable name is rejected"
+    );
 }
 
 /// The default-filter shapes the listing, but must not be applied again when
@@ -348,7 +430,7 @@ fn an_explicit_project_root_overrides_the_walk() {
         "listing succeeds: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_eq!(parse(&output).len(), 4);
+    assert_eq!(parse(&output).len(), 5);
 }
 
 /// A relative `--program` resolves against the project root rather than the
@@ -375,7 +457,7 @@ fn a_relative_program_resolves_against_the_project_root() {
         "listing succeeds: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_eq!(parse(&output).len(), 4);
+    assert_eq!(parse(&output).len(), 5);
 }
 
 /// An ignored configuration key reaches the user rather than being dropped.
