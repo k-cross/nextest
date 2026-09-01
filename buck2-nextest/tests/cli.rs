@@ -377,3 +377,21 @@ fn a_relative_program_resolves_against_the_project_root() {
     );
     assert_eq!(parse(&output).len(), 4);
 }
+
+/// An ignored configuration key reaches the user rather than being dropped.
+///
+/// The warning is a `tracing` event, so it arrives only if the binary installs
+/// a subscriber; without one the key is dropped in silence and the run quietly
+/// uses a setting the user did not ask for.
+#[test]
+fn an_unknown_configuration_key_is_reported() {
+    let fixture = Fixture::new("[profile.default]\nnot-a-real-key = true\n");
+    let output = fixture.run(&["list"]);
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "listing succeeds:\n{stderr}");
+    assert!(
+        stderr.contains("ignoring unknown configuration") && stderr.contains("not-a-real-key"),
+        "the ignored key is named on stderr:\n{stderr}"
+    );
+}

@@ -382,6 +382,7 @@ dependencies = [
  "serde_json",
  "swrite",
  "thiserror 2.0.20",
+ "tracing-subscriber",
 ]
 
 [[package]]

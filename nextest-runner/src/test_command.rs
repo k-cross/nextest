@@ -359,21 +359,6 @@ where
     }
 }
 
-/// This is a workaround for a macOS SIP issue:
-/// https://github.com/nextest-rs/nextest/pull/84
-///
-/// Basically, if SIP is enabled, macOS removes any environment variables that start with
-/// "LD_" or "DYLD_" when spawning system-protected processes. This unfortunately includes
-/// processes like bash -- this means that if nextest invokes a shell script, paths might
-/// end up getting sanitized.
-///
-/// This is particularly relevant for target runners, which are often shell scripts.
-///
-/// To work around this, re-export any variables that begin with LD_ or DYLD_ as "NEXTEST_LD_"
-/// or "NEXTEST_DYLD_". Do this on all platforms for uniformity.
-///
-/// Nextest never changes these environment variables within its own process, so caching them is
-/// valid.
 /// Returns the dynamic library search path for a test binary.
 ///
 /// [`LocalExecuteContext::dylib_path`] puts the build's library directories
@@ -427,6 +412,21 @@ fn merge_dylib_path<'a>(
     }
 }
 
+/// This is a workaround for a macOS SIP issue:
+/// https://github.com/nextest-rs/nextest/pull/84
+///
+/// Basically, if SIP is enabled, macOS removes any environment variables that start with
+/// "LD_" or "DYLD_" when spawning system-protected processes. This unfortunately includes
+/// processes like bash -- this means that if nextest invokes a shell script, paths might
+/// end up getting sanitized.
+///
+/// This is particularly relevant for target runners, which are often shell scripts.
+///
+/// To work around this, re-export any variables that begin with LD_ or DYLD_ as "NEXTEST_LD_"
+/// or "NEXTEST_DYLD_". Do this on all platforms for uniformity.
+///
+/// Nextest never changes these environment variables within its own process, so caching them is
+/// valid.
 pub(crate) fn apply_ld_dyld_env(cmd: &mut std::process::Command, dylib_path: &OsStr) {
     fn is_sip_sanitized(var: &str) -> bool {
         // Look for variables starting with LD_ or DYLD_.
