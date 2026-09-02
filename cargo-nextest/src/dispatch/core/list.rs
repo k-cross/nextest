@@ -11,19 +11,16 @@ use super::{
 use crate::{
     Result,
     cargo_cli::CargoOptions,
-    dispatch::helpers::{build_filtersets, resolve_user_config},
+    dispatch::helpers::{build_filtersets, evaluate_profile, resolve_user_config},
     reuse_build::ReuseBuildOpts,
 };
 use clap::Args;
 use nextest_filtering::{FiltersetKind, ParseContext};
 use nextest_runner::{
     errors::WriteTestListError,
-    helpers::force_or_new_run_id,
-    list::TestExecuteContext,
     pager::PagedOutput,
     reporter::ShowProgress,
     run_mode::NextestRunMode,
-    runner::VersionEnvVars,
     show_config::{ShowTestGroupSettings, ShowTestGroups, ShowTestGroupsMode},
     user_config::elements::PaginateSetting,
     write_str::WriteStr,
@@ -134,38 +131,23 @@ impl App {
                 paged_output.finalize();
             }
             ListType::Full => {
-                let double_spawn = self.base.load_double_spawn();
-                let target_runner = self
-                    .base
-                    .load_runner(&binary_list.rust_build_meta.build_platforms);
-                let profile =
-                    profile.apply_build_platforms(&binary_list.rust_build_meta.build_platforms);
-                let nextest_version_config = version_only_config.nextest_version();
-                let version_env_vars = VersionEnvVars {
-                    current_version: self.base.current_version.clone(),
-                    required_version: nextest_version_config.required.version().cloned(),
-                    recommended_version: nextest_version_config.recommended.version().cloned(),
-                };
-                let ctx = TestExecuteContext {
-                    run_id: force_or_new_run_id(),
-                    version_env_vars: &version_env_vars,
-                    profile_name: profile.name(),
-                    double_spawn,
-                    target_runner,
-                };
+                let build_platforms = binary_list.rust_build_meta.build_platforms.clone();
+                let profile = evaluate_profile(profile, &build_platforms)?;
+                let ctx = self.session_context(&version_only_config, &build_platforms);
 
                 // The precedence for showing progress during listing is CLI ->
                 // env -> resolved config, same as the run path.
                 let list_show_progress = show_progress
                     .map(ShowProgress::from)
                     .unwrap_or_else(|| resolved_user_config.ui.show_progress.into());
-                let test_list = self.build_test_list(
+                let session = self.build_test_session(
                     &ctx,
+                    &profile,
                     binary_list,
                     &test_filter,
-                    &profile,
                     list_show_progress,
                 )?;
+                let test_list = session.test_list();
 
                 // Spawn the pager after building the list. (We sometimes
                 // display a progress bar during the list phase -- we want to
@@ -228,33 +210,20 @@ impl App {
         let binary_list = self.base.build_binary_list("test")?;
         let build_platforms = binary_list.rust_build_meta.build_platforms.clone();
 
-        let double_spawn = self.base.load_double_spawn();
-        let target_runner = self.base.load_runner(&build_platforms);
-        let profile = profile.apply_build_platforms(&build_platforms);
-        let nextest_version_config = version_only_config.nextest_version();
-        let version_env_vars = VersionEnvVars {
-            current_version: self.base.current_version.clone(),
-            required_version: nextest_version_config.required.version().cloned(),
-            recommended_version: nextest_version_config.recommended.version().cloned(),
-        };
-        let ctx = TestExecuteContext {
-            run_id: force_or_new_run_id(),
-            version_env_vars: &version_env_vars,
-            profile_name: profile.name(),
-            double_spawn,
-            target_runner,
-        };
+        let profile = evaluate_profile(profile, &build_platforms)?;
+        let ctx = self.session_context(&version_only_config, &build_platforms);
 
         let resolved_user_config =
             resolve_user_config(self.base.early_args.user_config_location())?;
 
-        let test_list = self.build_test_list(
+        let session = self.build_test_session(
             &ctx,
+            &profile,
             binary_list,
             &test_filter,
-            &profile,
             resolved_user_config.ui.show_progress.into(),
         )?;
+        let test_list = session.test_list();
 
         let (pager_setting, paginate) =
             self.base.early_args.resolve_pager(&resolved_user_config.ui);
@@ -265,7 +234,7 @@ impl App {
             &resolved_user_config.ui.streampager,
         );
 
-        let show_test_groups = ShowTestGroups::new(&profile, &test_list, &settings);
+        let show_test_groups = ShowTestGroups::new(&profile, test_list, &settings);
         show_test_groups
             .write_human(
                 &mut paged_output,

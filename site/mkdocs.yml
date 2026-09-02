@@ -142,6 +142,7 @@ nav:
           - "Debuggers and tracers": docs/integrations/debuggers-tracers.md
           - docs/integrations/criterion.md
           - "cargo-mutants": docs/integrations/cargo-mutants.md
+          - "Buck2": docs/integrations/buck2.md
           - docs/integrations/usdt.md
           - "Machine-readable output":
                 - "About output formats": docs/machine-readable/index.md
@@ -157,6 +158,7 @@ nav:
                 - "Signal handling": docs/design/architecture/signal-handling.md
                 - "Input handling": docs/design/architecture/input-handling.md
                 - docs/design/architecture/recording-runs.md
+                - "Build system integration": docs/design/architecture/build-system-integration.md
 
 markdown_extensions:
     # Python Markdown

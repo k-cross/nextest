@@ -122,7 +122,7 @@ impl ArchiveApp {
         let ecx = profile.filterset_ecx();
 
         let (binary_list_to_archive, filter_counts) = apply_archive_filters(
-            self.base.graph(),
+            self.base.packages(&binary_list),
             binary_list.clone(),
             &binary_filter,
             &ecx,

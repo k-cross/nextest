@@ -4,7 +4,7 @@
 use crate::{
     errors::{FromMessagesError, RustBuildMetaParseError, WriteTestListError},
     helpers::convert_rel_path_to_forward_slash,
-    list::{BinaryListState, OutputFormat, RustBuildMeta, Styles},
+    list::{BinaryListState, OutputFormat, RustBuildMeta, Styles, TestBinaryInvocation},
     platform::BuildPlatforms,
     write_str::WriteStr,
 };
@@ -39,6 +39,8 @@ pub struct RustTestBinary {
     /// Platform for which this binary was built.
     /// (Proc-macro tests are built for the host.)
     pub build_platform: BuildPlatform,
+    /// Invoked this binary using cargo or other system.
+    pub invocation: TestBinaryInvocation,
 }
 
 /// The list of Rust test binaries built by Cargo.
@@ -80,6 +82,10 @@ impl BinaryList {
                 kind: bin.kind,
                 id: bin.binary_id,
                 build_platform: bin.build_platform,
+                // Not carried in the summary format; see
+                // `TestBinaryInvocation::warn_if_unrepresentable`, which is what
+                // keeps a non-empty one from being written out unnoticed.
+                invocation: TestBinaryInvocation::empty(),
             })
             .collect();
         Ok(Self {
@@ -135,6 +141,7 @@ impl BinaryList {
                         .strip_prefix(build_directory)
                         .expect("test binary paths must be within the build directory"),
                 );
+                bin.invocation.warn_if_unrepresentable(&bin.id);
                 let summary = RustTestBinarySummary {
                     binary_name: bin.name.clone(),
                     package_id: bin.package_id.clone(),
@@ -157,6 +164,7 @@ impl BinaryList {
         self.rust_binaries
             .iter()
             .map(|bin| {
+                bin.invocation.warn_if_unrepresentable(&bin.id);
                 let summary = RustTestBinarySummary {
                     binary_name: bin.name.clone(),
                     package_id: bin.package_id.clone(),
@@ -380,6 +388,8 @@ impl<'g> BinaryListBuildState<'g> {
                     name,
                     id,
                     build_platform: platform,
+                    // Cargo binaries are invoked directly.
+                    invocation: TestBinaryInvocation::empty(),
                 });
             } else if artifact
                 .target
@@ -719,7 +729,7 @@ mod tests {
         cargo_config::{TargetDefinitionLocation, TargetTriple, TargetTripleSource},
         list::{
             SerializableFormat,
-            test_helpers::{PACKAGE_GRAPH_FIXTURE, PACKAGE_METADATA_ID, package_metadata},
+            test_helpers::{PACKAGE_GRAPH_FIXTURE, PACKAGE_METADATA_ID, package_info},
         },
         platform::{HostPlatform, PlatformLibdir, TargetPlatform},
     };
@@ -740,6 +750,7 @@ mod tests {
             kind: RustTestBinaryKind::LIB,
             name: "fake-binary".to_owned(),
             build_platform: BuildPlatform::Target,
+            invocation: TestBinaryInvocation::empty(),
         };
         let fake_macro_test = RustTestBinary {
             id: "fake-macro::proc-macro/fake-macro".into(),
@@ -749,6 +760,7 @@ mod tests {
             kind: RustTestBinaryKind::PROC_MACRO,
             name: "fake-macro".to_owned(),
             build_platform: BuildPlatform::Host,
+            invocation: TestBinaryInvocation::empty(),
         };
 
         let fake_triple = TargetTriple {
@@ -958,7 +970,7 @@ mod tests {
             },
             target: None,
         };
-        let package = package_metadata();
+        let package = package_info();
         // The fixture sets build_directory separately from target_directory, so
         // an artifact resolved against the wrong root fails to produce a base
         // output directory.
@@ -968,7 +980,7 @@ mod tests {
             .expect("fixture sets build_directory")
             .join("debug/deps/metadata_helper-test");
         let compiler_artifact = artifact_json(
-            package.name(),
+            &package.name,
             &["lib"],
             std::slice::from_ref(&artifact_path),
             Some(&artifact_path),
@@ -1365,9 +1377,9 @@ mod tests {
         executable: Option<&Utf8Path>,
         test_target: TestTarget,
     ) -> serde_json::Value {
-        let package = package_metadata();
+        let package = package_info();
         let src_path = package
-            .manifest_path()
+            .manifest_path
             .parent()
             .expect("manifest path has a parent")
             .join("src/lib.rs");
@@ -1376,7 +1388,7 @@ mod tests {
         json!({
             "reason": "compiler-artifact",
             "package_id": PACKAGE_METADATA_ID,
-            "manifest_path": package.manifest_path(),
+            "manifest_path": package.manifest_path,
             "target": {
                 "name": name,
                 "kind": kind,

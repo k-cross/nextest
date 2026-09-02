@@ -1,0 +1,17 @@
+# Copyright (c) The nextest Contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+load("@prelude//toolchains:demo.bzl", "system_demo_toolchains")
+load("@nextest//:nextest_toolchain.bzl", "system_nextest_toolchain")
+
+# The demo toolchains find `rustc` and a C linker on `PATH`. A real project would copy these
+# definitions and pin its own toolchains; for an example, tracking the host's Rust installation is
+# what makes the project runnable straight from a checkout.
+system_demo_toolchains()
+
+# Finds `buck2-nextest` on `PATH`, which is all this example needs. A project that runs tests
+# remotely wants `nextest_toolchain` instead, so the binary is an input the action carries.
+system_nextest_toolchain(
+    name = "nextest",
+    visibility = ["PUBLIC"],
+)
