@@ -120,12 +120,11 @@ impl<'g> RustTestArtifact<'g> {
                 }
             })?;
 
-            // Tests are run wherever the build system said, defaulting to the
+            let mut invocation = binary.invocation.clone();
             // directory containing the manifest.
-            let cwd = binary
-                .invocation
+            let cwd = invocation
                 .cwd
-                .clone()
+                .take()
                 .unwrap_or_else(|| package.cwd().to_path_buf());
 
             // Test binaries live under the build directory (never uplifted).
@@ -164,7 +163,7 @@ impl<'g> RustTestArtifact<'g> {
                 cwd,
                 non_test_binaries,
                 build_platform: binary.build_platform,
-                invocation: binary.invocation.clone(),
+                invocation,
             })
         }
 
