@@ -97,10 +97,10 @@ impl PackageInfo {
         binary_list
             .rust_binaries
             .iter()
-            .map(|binary| PackageId::new(binary.package_id.clone()))
+            .map(|binary| binary.package_id.as_str())
             .collect::<BTreeSet<_>>()
-            .iter()
-            .filter_map(|id| graph.metadata(id).ok())
+            .into_iter()
+            .filter_map(|id| graph.metadata(&PackageId::new(id)).ok())
             .map(|package| Self::from_package_metadata(&package))
             .collect()
     }
