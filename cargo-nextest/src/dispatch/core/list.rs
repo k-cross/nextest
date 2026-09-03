@@ -131,9 +131,9 @@ impl App {
                 paged_output.finalize();
             }
             ListType::Full => {
-                let build_platforms = binary_list.rust_build_meta.build_platforms.clone();
-                let profile = evaluate_profile(profile, &build_platforms)?;
-                let ctx = self.session_context(&version_only_config, &build_platforms);
+                let build_platforms = &binary_list.rust_build_meta.build_platforms;
+                let profile = evaluate_profile(profile, build_platforms)?;
+                let ctx = self.session_context(&version_only_config, build_platforms);
 
                 // The precedence for showing progress during listing is CLI ->
                 // env -> resolved config, same as the run path.
@@ -208,10 +208,10 @@ impl App {
             .test_filter;
 
         let binary_list = self.base.build_binary_list("test")?;
-        let build_platforms = binary_list.rust_build_meta.build_platforms.clone();
+        let build_platforms = &binary_list.rust_build_meta.build_platforms;
 
-        let profile = evaluate_profile(profile, &build_platforms)?;
-        let ctx = self.session_context(&version_only_config, &build_platforms);
+        let profile = evaluate_profile(profile, build_platforms)?;
+        let ctx = self.session_context(&version_only_config, build_platforms);
 
         let resolved_user_config =
             resolve_user_config(self.base.early_args.user_config_location())?;

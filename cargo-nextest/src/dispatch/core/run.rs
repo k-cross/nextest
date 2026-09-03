@@ -1145,7 +1145,7 @@ impl App {
             }
             RunKindOpts::Bench { .. } => self.base.build_binary_list("bench")?,
         };
-        let build_platforms = &binary_list.rust_build_meta.build_platforms.clone();
+        let build_platforms = &binary_list.rust_build_meta.build_platforms;
 
         let profile = evaluate_profile(profile, build_platforms)?;
         let ctx = self.session_context(&version_only_config, build_platforms);
