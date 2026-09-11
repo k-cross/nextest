@@ -1,0 +1,39 @@
+[package]
+name = "buck2-nextest"
+description = "A next-generation test runner for Buck2."
+version = "0.1.0"
+license = "Apache-2.0 OR MIT"
+repository = "https://github.com/nextest-rs/nextest"
+documentation = "https://nexte.st"
+keywords = ["nextest", "test-runner", "buck2"]
+categories = ["development-tools::testing"]
+edition.workspace = true
+rust-version.workspace = true
+exclude.workspace = true
+publish = false
+
+[dependencies]
+camino.workspace = true
+clap = { workspace = true, features = ["derive", "env", "unicode", "wrap_help"] }
+iddqd.workspace = true
+miette = { workspace = true, features = ["fancy"] }
+# `nextest-session` is the whole of nextest that a build system integration
+# depends on: it re-exports what the pipeline takes and produces, so reaching
+# past it to `nextest-runner` is a compile error rather than a convention.
+#
+# Instead of using workspace dependencies which have floating versions, we pin an
+# exact version here to avoid compatibility issues.
+nextest-session = { version = "=0.1.0", path = "../nextest-session" }
+nextest-workspace-hack.workspace = true
+semver.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+swrite.workspace = true
+thiserror.workspace = true
+tracing-subscriber = { workspace = true, default-features = false }
+
+[dev-dependencies]
+camino-tempfile.workspace = true
+
+[lints]
+workspace = true

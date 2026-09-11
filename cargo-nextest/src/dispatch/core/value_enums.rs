@@ -7,6 +7,7 @@ use crate::errors::CargoMessageFormatError;
 use clap::ValueEnum;
 use nextest_metadata::BuildPlatform;
 use nextest_runner::reporter::{FinalStatusLevel, ShowProgress, StatusLevel, TestOutputDisplay};
+use nextest_session::NoTestsBehavior;
 use std::collections::HashSet;
 
 /// Platform filter options.
@@ -127,6 +128,17 @@ pub(crate) enum NoTestsBehaviorOpt {
     /// Produce an error message and exit with code 4.
     #[clap(alias = "error")]
     Fail,
+}
+
+impl From<NoTestsBehaviorOpt> for NoTestsBehavior {
+    fn from(opt: NoTestsBehaviorOpt) -> Self {
+        match opt {
+            NoTestsBehaviorOpt::Auto => Self::Auto,
+            NoTestsBehaviorOpt::Pass => Self::Pass,
+            NoTestsBehaviorOpt::Warn => Self::Warn,
+            NoTestsBehaviorOpt::Fail => Self::Fail,
+        }
+    }
 }
 
 /// Test output display options.

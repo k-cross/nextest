@@ -7,10 +7,12 @@
 //! * [`TestList`] for test instances
 //! * [`BinaryList`] for test binaries
 
+mod binary_invocation;
 mod binary_list;
 mod display_filter;
 mod non_test_binaries;
 mod output_format;
+mod package_info;
 #[cfg(test)]
 mod partition_tests;
 mod progress;
@@ -19,10 +21,12 @@ mod rust_build_meta;
 mod test_helpers;
 mod test_list;
 
+pub use binary_invocation::*;
 pub use binary_list::*;
 pub(crate) use display_filter::*;
 pub(crate) use non_test_binaries::*;
 pub use output_format::*;
+pub use package_info::*;
 pub use progress::ListProgressOptions;
 pub(crate) use progress::{ListProgressEvent, ListProgressReporter};
 pub use rust_build_meta::*;

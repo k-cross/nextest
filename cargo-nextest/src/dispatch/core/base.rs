@@ -15,6 +15,7 @@ use crate::{
 };
 use camino::Utf8PathBuf;
 use guppy::graph::PackageGraph;
+use iddqd::IdOrdMap;
 use nextest_filtering::ParseContext;
 use nextest_runner::{
     cargo_config::CargoConfigs,
@@ -23,7 +24,7 @@ use nextest_runner::{
         NextestVersionEval, VersionOnlyConfig,
     },
     double_spawn::DoubleSpawnInfo,
-    list::BinaryList,
+    list::{BinaryList, PackageInfo},
     platform::BuildPlatforms,
     reuse_build::ReuseBuildInfo,
     target_runner::TargetRunner,
@@ -45,6 +46,8 @@ pub(crate) struct BaseApp {
     pub(crate) build_platforms: BuildPlatforms,
     pub(crate) cargo_metadata_json: Arc<String>,
     package_graph: Arc<PackageGraph>,
+    // Computed on first access, for the binary list passed in then.
+    packages: OnceLock<IdOrdMap<PackageInfo>>,
     // Potentially remapped workspace root (might not be the same as the graph).
     pub(crate) workspace_root: Utf8PathBuf,
     manifest_path: Option<Utf8PathBuf>,
@@ -161,6 +164,7 @@ impl BaseApp {
             cargo_configs,
             current_version,
 
+            packages: OnceLock::new(),
             double_spawn: OnceLock::new(),
             target_runner: OnceLock::new(),
         })
@@ -487,6 +491,15 @@ impl BaseApp {
         &self.package_graph
     }
 
+    /// Returns package information for the packages `binary_list` refers to.
+    ///
+    /// `nextest-runner`'s list and run phases take this rather than the graph
+    /// itself, so that non-Cargo orchestrators can supply their own.
+    pub(crate) fn packages(&self, binary_list: &BinaryList) -> &IdOrdMap<PackageInfo> {
+        self.packages
+            .get_or_init(|| PackageInfo::map_from_binary_list(&self.package_graph, binary_list))
+    }
+
     pub(crate) fn load_profile<'cfg>(
         &self,
         config: &'cfg NextestConfig,
@@ -503,15 +516,14 @@ impl BaseApp {
         let profile = config
             .profile(profile_name)
             .map_err(ExpectedError::profile_not_found)?;
-        if profile.has_junit() {
-            let store_dir = profile.store_dir();
-            std::fs::create_dir_all(store_dir).map_err(|err| {
-                ExpectedError::StoreDirCreateError {
-                    store_dir: store_dir.to_owned(),
-                    err,
-                }
-            })?;
-        }
+        // Surface a store directory failure here, before the build step; the
+        // profile evaluation later in the pipeline repeats this idempotently.
+        nextest_session::create_junit_store_dir(&profile).map_err(|error| {
+            ExpectedError::StoreDirCreateError {
+                store_dir: error.store_dir,
+                err: error.error,
+            }
+        })?;
         Ok(profile)
     }
 }

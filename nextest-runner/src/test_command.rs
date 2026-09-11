@@ -6,16 +6,15 @@ use crate::{
     config::scripts::ScriptCommandEnvMap,
     double_spawn::{DoubleSpawnContext, DoubleSpawnInfo},
     helpers::dylib_path_envvar,
-    list::{RustBuildMeta, TestListState},
+    list::{PackageInfo, RustBuildMeta, TestListState},
     runner::{Interceptor, VersionEnvVars},
     test_output::CaptureStrategy,
 };
 use camino::{Utf8Path, Utf8PathBuf};
-use guppy::graph::PackageMetadata;
 use quick_junit::ReportUuid;
 use std::{
     borrow::Cow,
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     ffi::{OsStr, OsString},
     fs::File,
     io::{BufRead, BufReader},
@@ -36,6 +35,7 @@ pub(crate) struct LocalExecuteContext<'a> {
     pub(crate) rust_build_meta: &'a RustBuildMeta<TestListState>,
     pub(crate) double_spawn: &'a DoubleSpawnInfo,
     pub(crate) dylib_path: &'a OsStr,
+    pub(crate) build_dylib_paths: &'a [Utf8PathBuf],
     pub(crate) profile_name: &'a str,
     pub(crate) env: &'a EnvironmentMap,
 }
@@ -66,8 +66,9 @@ impl TestCommand {
         program: String,
         args: &[Cow<'_, str>],
         env: Option<&ScriptCommandEnvMap>,
+        suite_env: &BTreeMap<String, String>,
         cwd: &Utf8Path,
-        package: &PackageMetadata<'_>,
+        package: &PackageInfo,
         non_test_binaries: &BTreeSet<(String, Utf8PathBuf)>,
         interceptor: &Interceptor,
     ) -> Self {
@@ -77,10 +78,15 @@ impl TestCommand {
             create_command(program.clone(), args, lctx.double_spawn)
         };
 
-        // Apply Cargo's config.toml env first (workspace-wide), then the
-        // wrapper's command.env (per-script). This way command.env takes
-        // priority as the more specific configuration.
+        // Apply Cargo's config.toml env first (workspace-wide), then the test
+        // suite's own env (per-binary, from the build system that described it),
+        // then the wrapper's command.env (per-script). Each is more specific
+        // than the last, so each takes priority over it.
+        //
+        // The variables nextest sets below override all three: they describe the
+        // run itself, and a test binary must not be able to lie about them.
         lctx.env.apply_env(&mut cmd);
+        cmd.envs(suite_env);
         if let Some(env) = env {
             env.apply_env(&mut cmd);
         }
@@ -88,7 +94,7 @@ impl TestCommand {
         if let Some(out_dir) = lctx
             .rust_build_meta
             .build_script_out_dirs
-            .get(package.id().repr())
+            .get(package.id.repr())
         {
             // Convert the output directory to an absolute path. Build script
             // out_dirs are relative to the build directory.
@@ -105,7 +111,7 @@ impl TestCommand {
             // supported by cargo test, but discouraged.
             match &lctx.rust_build_meta.build_script_info {
                 Some(info) => {
-                    if let Some(info) = info.get(package.id().repr()) {
+                    if let Some(info) = info.get(package.id.repr()) {
                         for (key, val) in &info.envs {
                             cmd.env(key, val);
                         }
@@ -140,7 +146,7 @@ impl TestCommand {
 
         apply_package_env(&mut cmd, package);
 
-        apply_ld_dyld_env(&mut cmd, lctx.dylib_path);
+        apply_ld_dyld_env(&mut cmd, &suite_dylib_path(lctx, suite_env));
 
         // Expose paths to non-test binaries at runtime so that relocated paths
         // work.
@@ -263,43 +269,44 @@ where
     cmd
 }
 
-fn apply_package_env(cmd: &mut std::process::Command, package: &PackageMetadata<'_>) {
+fn apply_package_env(cmd: &mut std::process::Command, package: &PackageInfo) {
     // These environment variables are set at runtime by cargo test:
     // https://doc.rust-lang.org/cargo/reference/environment-variables.html#environment-variables-cargo-sets-for-crates
-    cmd.env("CARGO_PKG_VERSION", package.version().to_string())
-        .env(
-            "CARGO_PKG_VERSION_MAJOR",
-            package.version().major.to_string(),
-        )
-        .env(
-            "CARGO_PKG_VERSION_MINOR",
-            package.version().minor.to_string(),
-        )
-        .env(
-            "CARGO_PKG_VERSION_PATCH",
-            package.version().patch.to_string(),
-        )
-        .env("CARGO_PKG_VERSION_PRE", package.version().pre.to_string())
-        .env("CARGO_PKG_AUTHORS", package.authors().join(":"))
-        .env("CARGO_PKG_NAME", package.name())
+    cmd.env("CARGO_PKG_VERSION", package.version.to_string())
+        .env("CARGO_PKG_VERSION_MAJOR", package.version.major.to_string())
+        .env("CARGO_PKG_VERSION_MINOR", package.version.minor.to_string())
+        .env("CARGO_PKG_VERSION_PATCH", package.version.patch.to_string())
+        .env("CARGO_PKG_VERSION_PRE", package.version.pre.to_string())
+        .env("CARGO_PKG_AUTHORS", package.authors.join(":"))
+        .env("CARGO_PKG_NAME", &package.name)
         .env(
             "CARGO_PKG_DESCRIPTION",
-            package.description().unwrap_or_default(),
+            package.description.as_deref().unwrap_or_default(),
         )
-        .env("CARGO_PKG_HOMEPAGE", package.homepage().unwrap_or_default())
-        .env("CARGO_PKG_LICENSE", package.license().unwrap_or_default())
+        .env(
+            "CARGO_PKG_HOMEPAGE",
+            package.homepage.as_deref().unwrap_or_default(),
+        )
+        .env(
+            "CARGO_PKG_LICENSE",
+            package.license.as_deref().unwrap_or_default(),
+        )
         .env(
             "CARGO_PKG_LICENSE_FILE",
-            package.license_file().unwrap_or_else(|| "".as_ref()),
+            package
+                .license_file
+                .as_deref()
+                .unwrap_or_else(|| "".as_ref()),
         )
         .env(
             "CARGO_PKG_REPOSITORY",
-            package.repository().unwrap_or_default(),
+            package.repository.as_deref().unwrap_or_default(),
         )
         .env(
             "CARGO_PKG_RUST_VERSION",
             package
-                .minimum_rust_version()
+                .minimum_rust_version
+                .as_ref()
                 .map_or(String::new(), |v| v.to_string()),
         );
 }
@@ -353,6 +360,55 @@ where
     }
 }
 
+/// Returns the dynamic library search path for a test binary.
+///
+/// [`LocalExecuteContext::dylib_path`] puts the build's library directories
+/// ahead of the ones nextest inherited from its own environment. A test suite
+/// that states its own value for the variable -- something only a non-Cargo
+/// build system does, since Cargo binaries carry no invocation environment --
+/// stands in for that inherited part: the build system is describing the
+/// environment its test needs, and nextest's directories still have to come
+/// first for the binary to load libstd at all.
+fn suite_dylib_path<'a>(
+    lctx: &'a LocalExecuteContext<'_>,
+    suite_env: &BTreeMap<String, String>,
+) -> Cow<'a, OsStr> {
+    match suite_env.get(dylib_path_envvar()) {
+        Some(suite_value) => merge_dylib_path(lctx.build_dylib_paths, suite_value, lctx.dylib_path),
+        None => Cow::Borrowed(lctx.dylib_path),
+    }
+}
+
+/// Puts `build_dirs` ahead of the suite's own value for the dynamic library
+/// search path.
+///
+/// Falls back to `inherited` if the result cannot be joined, which is
+/// unreachable in practice: [`TestList::create_dylib_path`] joined these same
+/// directories at list time, and the suite's components come from
+/// [`std::env::split_paths`], so none of them contains the separator.
+///
+/// [`TestList::create_dylib_path`]: crate::list::TestList
+fn merge_dylib_path<'a>(
+    build_dirs: &[Utf8PathBuf],
+    suite_value: &str,
+    inherited: &'a OsStr,
+) -> Cow<'a, OsStr> {
+    let paths = build_dirs
+        .iter()
+        .map(|dir| dir.clone().into_std_path_buf())
+        .chain(std::env::split_paths(suite_value));
+    match std::env::join_paths(paths) {
+        Ok(joined) => Cow::Owned(joined),
+        Err(error) => {
+            warn!(
+                "failed to add `{suite_value}` from the test suite to {}: {error}",
+                dylib_path_envvar(),
+            );
+            Cow::Borrowed(inherited)
+        }
+    }
+}
+
 /// This is a workaround for a macOS SIP issue:
 /// https://github.com/nextest-rs/nextest/pull/84
 ///
@@ -403,6 +459,7 @@ pub(crate) fn apply_ld_dyld_env(cmd: &mut std::process::Command, dylib_path: &Os
 mod tests {
     use super::*;
     use indoc::indoc;
+    use std::path::PathBuf;
 
     #[test]
     fn parse_build_script() {
@@ -430,6 +487,51 @@ mod tests {
                 ("NEW_EMPTY_VALUE".to_owned(), "".to_owned()),
             ],
             "parsed key-value pairs match"
+        );
+    }
+
+    #[test]
+    fn suite_dylib_path_goes_after_the_build_directories() {
+        let build_dirs = [
+            Utf8PathBuf::from("/rustc/lib"),
+            Utf8PathBuf::from("/build/deps"),
+        ];
+        let inherited = OsString::from("/inherited");
+        let merged = merge_dylib_path(&build_dirs, "/suite/libs", &inherited);
+
+        let components: Vec<_> = std::env::split_paths(&merged).collect();
+        assert_eq!(
+            components,
+            [
+                PathBuf::from("/rustc/lib"),
+                PathBuf::from("/build/deps"),
+                PathBuf::from("/suite/libs"),
+            ],
+            "the build's directories load first, then the suite's own"
+        );
+        assert!(
+            !components.contains(&PathBuf::from("/inherited")),
+            "the suite's value stands in for what nextest inherited, got {components:?}"
+        );
+    }
+
+    #[test]
+    fn a_multi_component_suite_value_is_kept_whole() {
+        let build_dirs = [Utf8PathBuf::from("/rustc/lib")];
+        let inherited = OsString::from("/inherited");
+        let suite_value = std::env::join_paths(["/suite/a", "/suite/b"])
+            .expect("the test's own paths join")
+            .into_string()
+            .expect("the joined path is UTF-8");
+        let merged = merge_dylib_path(&build_dirs, &suite_value, &inherited);
+
+        assert_eq!(
+            std::env::split_paths(&merged).collect::<Vec<_>>(),
+            [
+                PathBuf::from("/rustc/lib"),
+                PathBuf::from("/suite/a"),
+                PathBuf::from("/suite/b"),
+            ],
         );
     }
 }
