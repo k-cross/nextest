@@ -177,7 +177,9 @@ nowhere in the picture. Against a Buck2 carrying both fixes, the example project
 ## An example
 
 The nextest repository contains a complete, runnable Buck2 project at `buck2-nextest/buck/`, with
-the rule library it uses in `buck2-nextest/buck/nextest/`.
+the rule library it uses in `buck2-nextest/buck/nextest/`. Its `example/` package is the all-passing
+scenario described above; a second package, `example-failure/`, holds one test that always fails,
+kept separate so a real failure never turns `example/`'s all-green run red.
 
 `buck2-nextest` is also the reference implementation of nextest's
 [build system integration contract](../design/architecture/build-system-integration.md), for anyone
