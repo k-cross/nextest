@@ -10,7 +10,11 @@
 //! Two shapes, matching what `InternalRunnerTestInfo` documents:
 //!
 //! * `parse_test_listing` reads a list of `{"name", "filter"}`, where `name` is
-//!   displayed and `filter` is what selects the test to run.
+//!   displayed and `filter` is what selects the test to run. The `filter` is
+//!   itself JSON, a [`ListedTestFilter`], so that running the test needs no
+//!   listing of its own. An ignored test also carries `"status": "SKIP"` and a
+//!   `message`, which a Buck2 that supports them reports without running the
+//!   test; older versions ignore both keys and ask `run` about it instead.
 //! * `parse_test_result` reads a list of `{"name", "status", "message",
 //!   "duration", "details"}`.
 //!
@@ -20,14 +24,14 @@
 //! the `name` the listing gave, or Buck2 cannot match them up.
 
 use nextest_session::{
-    LiveSpec, MismatchReason, TestCaseName, TestInstanceId,
+    LiveSpec, MismatchReason, RustTestKind, TestCaseName, TestInstanceId, UnfilteredTestCase,
     events::{
         ChildExecutionOutputDescription, ChildOutputDescription, ExecuteStatus,
         ExecutionDescription, ExecutionResultDescription, ExecutionStatuses,
     },
     plural,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use swrite::{SWrite, swrite};
 
@@ -37,8 +41,61 @@ pub(crate) struct ListedTest {
     /// What Buck2 displays for this test.
     pub(crate) name: String,
 
-    /// What selects this test for execution.
+    /// What selects this test for execution: a [`ListedTestFilter`], as
+    /// JSON.
     pub(crate) filter: String,
+
+    /// The outcome Buck2 reports without running the test, if it has one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) status: Option<BuckTestStatus>,
+
+    /// Why that is the outcome.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) message: Option<String>,
+}
+
+/// Returns the outcome a listing can report for a test without running it.
+///
+/// An ignored test is the only one that has one, and the message matches what
+/// [`result_from_skipped`] reports for it, since the two describe the same
+/// test to the same UI.
+pub(crate) fn preset_result(filter: &ListedTestFilter) -> (Option<BuckTestStatus>, Option<String>) {
+    if filter.ignored {
+        (
+            Some(BuckTestStatus::Skip),
+            Some(MismatchReason::Ignored.to_string()),
+        )
+    } else {
+        (None, None)
+    }
+}
+
+/// What the run mode needs to know about a listed test.
+///
+/// Buck2 hands the `filter` back verbatim, so carrying these here spares the
+/// run from listing the binary again. It is JSON because test names are
+/// arbitrary strings.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ListedTestFilter {
+    /// The test's name within its binary.
+    pub(crate) name: TestCaseName,
+
+    /// The kind of test, as the binary listed it.
+    pub(crate) kind: RustTestKind,
+
+    /// Whether the test is ignored.
+    pub(crate) ignored: bool,
+}
+
+impl ListedTestFilter {
+    pub(crate) fn to_test_case(&self) -> UnfilteredTestCase {
+        UnfilteredTestCase {
+            name: self.name.clone(),
+            kind: self.kind.clone(),
+            ignored: self.ignored,
+        }
+    }
 }
 
 /// A test's outcome, in Buck2's vocabulary.
@@ -88,7 +145,7 @@ pub(crate) struct TestResult {
 /// The target label is included because Buck2 shows results from every target
 /// together, and the same test path can appear under more than one of them --
 /// a per-module target and an all-in-one target compiling the same sources,
-/// say. The bare test path stays the `filter`, since that is what the binary
+/// say. The `filter` carries the bare test path, since that is what the binary
 /// itself understands.
 pub(crate) fn display_name(label: &str, test_name: &TestCaseName) -> String {
     format!("{label} - {test_name}")

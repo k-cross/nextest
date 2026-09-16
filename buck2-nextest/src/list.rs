@@ -10,7 +10,7 @@
 
 use crate::{
     errors::{ExpectedError, Result},
-    output::{ListedTest, display_name},
+    output::{ListedTest, ListedTestFilter, display_name, preset_result},
     pipeline::Context,
 };
 use nextest_session::{
@@ -34,15 +34,30 @@ pub(crate) fn list(cx: &Context, writer: &mut dyn WriteStr) -> Result<()> {
 
     let session = cx.build_session(&ctx, &profile, &filter, FilterBound::DefaultSet)?;
 
-    let listed: Vec<ListedTest> = session
+    let listed = session
         .test_list()
         .iter_tests()
         .filter(|test| test.test_info.filter_match.is_match())
-        .map(|test| ListedTest {
-            name: display_name(&cx.label, test.name),
-            filter: test.name.to_string(),
+        .map(|test| {
+            let kind =
+                test.test_info.kind.clone().expect(
+                    "a test list built by executing the binary records the kind of every test",
+                );
+            let filter = ListedTestFilter {
+                name: test.name.clone(),
+                kind,
+                ignored: test.test_info.ignored,
+            };
+            let (status, message) = preset_result(&filter);
+            Ok(ListedTest {
+                name: display_name(&cx.label, test.name),
+                filter: serde_json::to_string(&filter)
+                    .map_err(|error| ExpectedError::ResultSerializeError { error })?,
+                status,
+                message,
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
 
     let json = serde_json::to_string(&listed)
         .map_err(|error| ExpectedError::ResultSerializeError { error })?;

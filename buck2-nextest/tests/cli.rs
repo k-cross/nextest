@@ -12,8 +12,11 @@
 
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::Utf8TempDir;
-use serde_json::Value;
-use std::process::{Command, Output};
+use serde_json::{Value, json};
+use std::{
+    process::{Command, Output},
+    sync::OnceLock,
+};
 
 /// A libtest harness with one test of each interesting shape.
 ///
@@ -64,6 +67,9 @@ struct Fixture {
     _dir: Utf8TempDir,
     root: Utf8PathBuf,
     program: Utf8PathBuf,
+    /// The default listing, which costs two executions of the harness to
+    /// produce, so tests that ask for several filters produce it once.
+    default_listing: OnceLock<Vec<Value>>,
 }
 
 impl Fixture {
@@ -98,6 +104,7 @@ impl Fixture {
             _dir: dir,
             root,
             program,
+            default_listing: OnceLock::new(),
         }
     }
 
@@ -124,17 +131,72 @@ impl Fixture {
         parse(&output)
     }
 
-    /// Runs one test, returning its parsed result and the exit code.
+    /// Uses the default profile, so tests a profile's default filter drops can
+    /// still be asked for.
+    fn listed_filter(&self, test_name: &str) -> String {
+        self.default_listing
+            .get_or_init(|| self.list(&[]))
+            .iter()
+            .find(|test| filter_name(test) == test_name)
+            .map(|test| string(test, "filter").to_owned())
+            .unwrap_or_else(|| panic!("`{test_name}` is listed"))
+    }
+
+    /// Runs one test the way Buck2 does, via the listing's `filter`.
     fn run_test(&self, test_name: &str, args: &[&str]) -> (Value, i32) {
-        let output = self.run(&[&["run"], args, &["--test-name", test_name]].concat());
-        let mut results = parse(&output);
-        assert_eq!(
-            results.len(),
-            1,
-            "exactly one result: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        (results.remove(0), exit_code(&output))
+        let filter = self.listed_filter(test_name);
+        self.run_with_listed_filter(&filter, args)
+    }
+
+    fn run_with_listed_filter(&self, filter: &str, args: &[&str]) -> (Value, i32) {
+        single_result(&self.run(&[&["run"], args, &["--listed-test", filter]].concat()))
+    }
+
+    fn run_named_test(&self, test_name: &str, args: &[&str]) -> (Value, i32) {
+        single_result(&self.run(&[&["run"], args, &["--test-name", test_name]].concat()))
+    }
+
+    /// Wraps the harness in a script that logs each execution, for
+    /// [`Self::take_invocations`].
+    #[cfg(unix)]
+    fn log_invocations(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let script = self.root.join("logged-harness");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexec '{}' \"$@\"\n",
+                self.invocation_log(),
+                self.program,
+            ),
+        )
+        .expect("the script is written");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+            .expect("the script is made executable");
+        self.program = script;
+        // Anything listed before now was listed without the wrapper.
+        self.default_listing = OnceLock::new();
+    }
+
+    #[cfg(unix)]
+    fn invocation_log(&self) -> Utf8PathBuf {
+        self.root.join("invocations.log")
+    }
+
+    /// Returns each logged execution's arguments, and clears the log.
+    #[cfg(unix)]
+    fn take_invocations(&self) -> Vec<String> {
+        let log = self.invocation_log();
+        let invocations = match std::fs::read_to_string(&log) {
+            Ok(contents) => contents.lines().map(str::to_owned).collect(),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(error) => panic!("the invocation log is readable: {error}"),
+        };
+        if !invocations.is_empty() {
+            std::fs::remove_file(&log).expect("the invocation log is cleared");
+        }
+        invocations
     }
 }
 
@@ -154,6 +216,17 @@ fn parse(output: &Output) -> Vec<Value> {
     })
 }
 
+fn single_result(output: &Output) -> (Value, i32) {
+    let mut results = parse(output);
+    assert_eq!(
+        results.len(),
+        1,
+        "exactly one result: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    (results.remove(0), exit_code(output))
+}
+
 fn exit_code(output: &Output) -> i32 {
     output.status.code().expect("the process was not signalled")
 }
@@ -169,30 +242,85 @@ fn string<'a>(value: &'a Value, name: &str) -> &'a str {
         .unwrap_or_else(|| panic!("`{name}` is a string in {value}"))
 }
 
-/// Everything the harness has, ignored tests included, each with the bare test
-/// path as the filter Buck2 will append.
+fn decoded_filter(test: &Value) -> Value {
+    let filter = string(test, "filter");
+    serde_json::from_str(filter)
+        .unwrap_or_else(|error| panic!("the filter `{filter}` is JSON: {error}"))
+}
+
+fn filter_name(test: &Value) -> String {
+    string(&decoded_filter(test), "name").to_owned()
+}
+
+/// Everything the harness has, ignored tests included, each with a filter that
+/// describes the test.
 #[test]
 fn lists_every_test_including_ignored_ones() {
     let fixture = Fixture::new(PLAIN_CONFIG);
     let listed = fixture.list(&[]);
 
-    let entries: Vec<(&str, &str)> = listed
+    let entries: Vec<(&str, Value)> = listed
         .iter()
-        .map(|test| (string(test, "name"), string(test, "filter")))
+        .map(|test| (string(test, "name"), decoded_filter(test)))
         .collect();
 
-    assert_eq!(
-        entries,
-        vec![
-            ("root//app:harness - tests::fails", "tests::fails"),
-            ("root//app:harness - tests::flaky", "tests::flaky"),
-            ("root//app:harness - tests::is_ignored", "tests::is_ignored"),
-            ("root//app:harness - tests::passes", "tests::passes"),
+    let entry = |test_name: &str, ignored: bool| {
+        (
+            format!("root//app:harness - {test_name}"),
+            json!({"name": test_name, "kind": "test", "ignored": ignored}),
+        )
+    };
+    let expected = [
+        entry("tests::fails", false),
+        entry("tests::flaky", false),
+        entry("tests::is_ignored", true),
+        entry("tests::passes", false),
+        entry("tests::reads_target_env", false),
+    ];
+    let expected: Vec<(&str, Value)> = expected
+        .iter()
+        .map(|(name, filter)| (name.as_str(), filter.clone()))
+        .collect();
+
+    assert_eq!(entries, expected);
+}
+
+#[test]
+fn only_ignored_tests_are_listed_as_skipped_with_the_message_run_reports() {
+    let fixture = Fixture::new(PLAIN_CONFIG);
+    let listed = fixture.list(&[]);
+    let (run_result, _) = fixture.run_test("tests::is_ignored", &[]);
+
+    let preset_results: Vec<(String, Option<&Value>, Option<&Value>)> = listed
+        .iter()
+        .map(|test| {
             (
-                "root//app:harness - tests::reads_target_env",
-                "tests::reads_target_env",
-            ),
-        ]
+                filter_name(test),
+                field(test, "status"),
+                field(test, "message"),
+            )
+        })
+        .collect();
+    let skipped = json!("SKIP");
+    let expected: Vec<(String, Option<&Value>, Option<&Value>)> = [
+        ("tests::fails", None, None),
+        ("tests::flaky", None, None),
+        (
+            "tests::is_ignored",
+            Some(&skipped),
+            field(&run_result, "message"),
+        ),
+        ("tests::passes", None, None),
+        ("tests::reads_target_env", None, None),
+    ]
+    .into_iter()
+    .map(|(name, status, message)| (name.to_owned(), status, message))
+    .collect();
+
+    assert_eq!(preset_results, expected);
+    assert!(
+        field(&run_result, "message").is_some(),
+        "run reports a message for an ignored test: {run_result}"
     );
 }
 
@@ -206,7 +334,7 @@ fn listing_honours_the_profiles_default_filter() {
     );
     let listed = fixture.list(&["-P", "narrowed"]);
 
-    let names: Vec<&str> = listed.iter().map(|test| string(test, "filter")).collect();
+    let names: Vec<String> = listed.iter().map(filter_name).collect();
     assert_eq!(names, vec!["tests::passes"]);
 }
 
@@ -259,26 +387,51 @@ fn reports_an_ignored_test_as_skipped() {
     assert_eq!(code, 0, "a skipped test did not fail: {result}");
 }
 
-/// Every test the exact filter did not select is reported as skipped, so a sink
-/// that took the last event to arrive would answer with the wrong test. The
-/// name asked for and the name reported must match.
+/// Naming a test by hand lists the whole binary and reports every other test as
+/// skipped, so the result must be matched to the test asked for.
 #[test]
 fn reports_the_test_that_was_asked_for() {
     let fixture = Fixture::new(PLAIN_CONFIG);
 
     for test_name in ["tests::passes", "tests::fails", "tests::is_ignored"] {
-        let (result, _) = fixture.run_test(test_name, &[]);
-        assert_eq!(
-            string(&result, "name"),
-            format!("root//app:harness - {test_name}"),
-            "asked about {test_name}"
-        );
+        for (how, (result, _)) in [
+            ("listed", fixture.run_test(test_name, &[])),
+            ("named", fixture.run_named_test(test_name, &[])),
+        ] {
+            assert_eq!(
+                string(&result, "name"),
+                format!("root//app:harness - {test_name}"),
+                "asked about {test_name} by being {how}"
+            );
+        }
     }
 }
 
-/// Buck2 only runs what it listed, so being asked for something else means the
-/// listing it chose from is stale. Nothing is written, which leaves Buck2 to
-/// synthesize a failure from the exit code.
+/// A failure's message is not compared, since a panic message includes the
+/// thread ID.
+#[test]
+fn a_named_test_reports_what_a_listed_test_does() {
+    let fixture = Fixture::new(PLAIN_CONFIG);
+
+    for (test_name, keys) in [
+        ("tests::passes", &["name", "status", "message"][..]),
+        ("tests::fails", &["name", "status"][..]),
+        ("tests::is_ignored", &["name", "status", "message"][..]),
+    ] {
+        let (listed, listed_code) = fixture.run_test(test_name, &[]);
+        let (named, named_code) = fixture.run_named_test(test_name, &[]);
+        for key in keys {
+            assert_eq!(
+                field(&listed, key),
+                field(&named, key),
+                "{test_name} reports the same {key}"
+            );
+        }
+        assert_eq!(listed_code, named_code, "{test_name}");
+    }
+}
+
+/// Nothing is written, so Buck2 would synthesize a failure from the exit code.
 #[test]
 fn an_unknown_test_name_is_an_error() {
     let fixture = Fixture::new(PLAIN_CONFIG);
@@ -291,6 +444,104 @@ fn an_unknown_test_name_is_an_error() {
         stderr.contains("tests::does_not_exist"),
         "the error names the test that was asked for: {stderr}"
     );
+}
+
+/// Checking would mean listing the binary again, and libtest runs nothing and
+/// succeeds for an unknown name. Buck2 lists and runs the same binary, so in
+/// practice the two agree.
+#[test]
+fn a_listed_test_is_trusted_to_exist() {
+    let fixture = Fixture::new(PLAIN_CONFIG);
+    let filter = json!({"name": "tests::does_not_exist", "kind": "test", "ignored": false});
+    let (result, code) = fixture.run_with_listed_filter(&filter.to_string(), &[]);
+
+    assert_eq!(
+        string(&result, "name"),
+        "root//app:harness - tests::does_not_exist"
+    );
+    assert_eq!(string(&result, "status"), "PASS");
+    assert_eq!(code, 0);
+}
+
+#[test]
+fn a_listed_test_must_come_from_the_listing() {
+    let fixture = Fixture::new(PLAIN_CONFIG);
+    let output = fixture.run(&["run", "--listed-test", "tests::passes"]);
+
+    assert!(output.stdout.is_empty(), "nothing is reported to Buck2");
+    assert_ne!(exit_code(&output), 0);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("not a filter written by `buck2-nextest list`"),
+        "the error says what the value should have been: {stderr}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_listed_test_executes_the_binary_once() {
+    let mut fixture = Fixture::new(PLAIN_CONFIG);
+    fixture.log_invocations();
+    let filter = fixture.listed_filter("tests::passes");
+    assert_listing_logged(&fixture.take_invocations());
+
+    let (result, code) = fixture.run_with_listed_filter(&filter, &[]);
+    assert_eq!(string(&result, "status"), "PASS");
+    assert_eq!(code, 0);
+
+    let invocations = fixture.take_invocations();
+    assert_eq!(invocations.len(), 1, "one execution: {invocations:?}");
+    assert!(
+        invocations[0].starts_with("--exact tests::passes "),
+        "the one execution runs the test: {invocations:?}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn an_ignored_listed_test_executes_nothing() {
+    let mut fixture = Fixture::new(PLAIN_CONFIG);
+    fixture.log_invocations();
+    let filter = fixture.listed_filter("tests::is_ignored");
+    assert_listing_logged(&fixture.take_invocations());
+
+    let (result, code) = fixture.run_with_listed_filter(&filter, &[]);
+    assert_eq!(string(&result, "status"), "SKIP");
+    assert_eq!(code, 0);
+    assert_eq!(fixture.take_invocations(), Vec::<String>::new());
+}
+
+/// Guards the tests above against a wrapper that logs nothing.
+#[cfg(unix)]
+fn assert_listing_logged(invocations: &[String]) {
+    assert_eq!(
+        invocations.len(),
+        2,
+        "listing runs the binary with and without --ignored: {invocations:?}"
+    );
+    assert!(
+        invocations.iter().all(|args| args.contains("--list")),
+        "the listing only lists: {invocations:?}"
+    );
+}
+
+/// The contrast that makes the previous two tests meaningful.
+#[cfg(unix)]
+#[test]
+fn a_named_test_lists_the_binary_first() {
+    let mut fixture = Fixture::new(PLAIN_CONFIG);
+    fixture.log_invocations();
+
+    let (result, _) = fixture.run_named_test("tests::passes", &[]);
+    assert_eq!(string(&result, "status"), "PASS");
+
+    let invocations = fixture.take_invocations();
+    let listings = invocations
+        .iter()
+        .filter(|args| args.contains("--list"))
+        .count();
+    assert_eq!(listings, 2, "the binary is listed first: {invocations:?}");
+    assert_eq!(invocations.len(), 3, "and then run once: {invocations:?}");
 }
 
 /// Retries are nextest's, and they happen inside the single action Buck2 ran,
@@ -400,8 +651,8 @@ fn a_test_outside_the_default_filter_still_runs_when_asked_for() {
     );
 
     let listed = fixture.list(&["-P", "narrowed"]);
-    let filters: Vec<&str> = listed.iter().map(|test| string(test, "filter")).collect();
-    assert_eq!(filters, vec!["tests::passes"], "the listing is narrowed");
+    let names: Vec<String> = listed.iter().map(filter_name).collect();
+    assert_eq!(names, vec!["tests::passes"], "the listing is narrowed");
 
     let (result, code) = fixture.run_test("tests::fails", &["-P", "narrowed"]);
     assert_eq!(string(&result, "status"), "FAIL");

@@ -68,3 +68,20 @@ pub struct TestListOptions<'a> {
     /// How to show progress while listing.
     pub progress: ListProgressOptions,
 }
+
+/// Options for building the test list from test cases the caller already
+/// knows.
+///
+/// Like [`TestListOptions`], minus what only applies to executing binaries.
+#[derive(Debug)]
+pub struct KnownTestListOptions<'a> {
+    /// Partitions the run across several invocations, if requested.
+    pub partitioner_builder: Option<&'a PartitionerBuilder>,
+
+    /// Restricts the list to one build platform.
+    pub platform_filter: Option<BuildPlatform>,
+
+    /// What filtersets are bounded by: the profile's default filter, or
+    /// everything.
+    pub filter_bound: FilterBound,
+}

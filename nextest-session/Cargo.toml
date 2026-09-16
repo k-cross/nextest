@@ -26,5 +26,8 @@ semver.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 
+[dev-dependencies]
+camino-tempfile.workspace = true
+
 [lints]
 workspace = true

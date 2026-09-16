@@ -9,8 +9,8 @@ use nextest_session::{
     NextestExitCode,
     errors::{
         ConfigParseError, ConfigureHandleInheritanceError, CreateTestListError, FromMessagesError,
-        ProfileNotFound, StoreDirCreateError, TestFilterBuildError, TestRunnerBuildError,
-        TestRunnerExecuteErrors, WriteEventError,
+        KnownTestsBuildError, ProfileNotFound, StoreDirCreateError, TestFilterBuildError,
+        TestRunnerBuildError, TestRunnerExecuteErrors, WriteEventError,
     },
     events::CancelReason,
 };
@@ -111,6 +111,14 @@ pub enum ExpectedError {
         error: CreateTestListError,
     },
 
+    /// The listed test did not correspond to the target's binaries.
+    #[error("failed to build a test list from the listed test")]
+    KnownTestsMismatch {
+        /// The underlying error.
+        #[source]
+        error: KnownTestsBuildError,
+    },
+
     /// The test runner could not be built.
     #[error("failed to set up the test runner")]
     TestRunnerBuildError {
@@ -127,20 +135,16 @@ pub enum ExpectedError {
         error: StoreDirCreateError,
     },
 
-    /// The test Buck2 asked for was not in the binary.
-    ///
-    /// Buck2 only ever runs a test it saw in the listing, so this means the two
-    /// disagree.
+    /// The test named with `--test-name` was not in the binary.
     #[error("no test named `{test_name}` in `{label}`")]
     #[diagnostic(help(
-        "Buck2 runs the tests that `buck2-nextest list` reported for this target, so the \
-         listing and this run disagree; this is usually a stale listing, which \
-         `buck2 clean` clears"
+        "`buck2-nextest list` shows the tests in this target, and `--test-name` must \
+         match one of them exactly"
     ))]
     TestNotFound {
         /// The target the test was expected in.
         label: String,
-        /// The test name Buck2 asked for.
+        /// The test name that was asked for.
         test_name: String,
     },
 
@@ -188,7 +192,7 @@ pub enum ExpectedError {
     RunCancelled {
         /// The target the test was expected in.
         label: String,
-        /// The test name Buck2 asked for.
+        /// The test name that was asked for.
         test_name: String,
         /// Why the run was cancelled.
         reason: CancelReason,
@@ -215,6 +219,7 @@ impl ExpectedError {
             | Self::ConfigureHandleInheritanceError { .. } => NextestExitCode::SETUP_ERROR,
             Self::FromMessagesError { .. }
             | Self::CreateTestListError { .. }
+            | Self::KnownTestsMismatch { .. }
             | Self::TestNotFound { .. } => NextestExitCode::TEST_LIST_CREATION_FAILED,
             Self::RunCancelled { reason, .. } => match reason {
                 CancelReason::SetupScriptFailure => NextestExitCode::SETUP_SCRIPT_FAILED,

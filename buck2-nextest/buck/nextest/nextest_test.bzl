@@ -10,7 +10,7 @@ and implementation -- but returns `InternalRunnerTestInfo` in place of
 `ExternalRunnerTestInfo`, which asks Buck2 to
 
 1. run `buck2-nextest list` to discover the binary's tests,
-2. run `buck2-nextest run ... --test-name <test>` once per discovered test, and
+2. run `buck2-nextest run ... --listed-test <filter>` once per discovered test, and
 3. read each command's JSON through the callbacks below.
 
 Buck2 keeps everything that spans tests: scheduling, concurrency, caching, and
@@ -33,8 +33,9 @@ load("@prelude//decls:rust_rules.bzl", _prelude_rust_test = "rust_test")
 load(":nextest_toolchain.bzl", "NextestToolchainInfo")
 
 def _parse_test_listing(listing_content: str) -> list[dict[str, str]]:
-    # `buck2-nextest list` writes a JSON array of {"name", "filter"}. Empty
-    # output means the listing failed, and Buck2 reports that itself.
+    # `buck2-nextest list` writes a JSON array of {"name", "filter"}, plus
+    # {"status", "message"} on ignored tests. Empty output means the listing
+    # failed, and Buck2 reports that itself.
     if not listing_content.strip():
         return []
     return json.decode(listing_content)
@@ -104,8 +105,8 @@ def _nextest_test_impl(ctx: AnalysisContext) -> list[Provider]:
         type = external.test_type,
         listing_command = [toolchain.nextest, "list"] + common,
         # Buck2 appends the chosen test's `filter` as the final argument, so
-        # this ends with a bare `--test-name` for that value to bind to.
-        command = [toolchain.nextest, "run"] + common + ["--test-name"],
+        # this ends with a bare `--listed-test` for that value to bind to.
+        command = [toolchain.nextest, "run"] + common + ["--listed-test"],
         parse_test_listing = _parse_test_listing,
         parse_test_result = _parse_test_result,
         # Passed above as `--env` instead, so the target's environment applies

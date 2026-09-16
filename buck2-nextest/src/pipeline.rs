@@ -14,11 +14,14 @@ use crate::{
     errors::{ExpectedError, Result},
 };
 use camino::Utf8PathBuf;
+use iddqd::id_ord_map;
 use nextest_session::{
     ConfigExperimental, EarlyProfile, EnvironmentMap, EvaluatableProfile, FilterBound,
-    ListProgressOptions, NextestConfig, ParseContext, PathMapper, SessionContext, SessionInputs,
-    ShowProgress, ShowTerminalProgress, TestFilter, TestListOptions, TestSession, ThemeCharacters,
-    WriteStr, errors::SessionBuildError, evaluate_profile, force_or_new_run_id,
+    KnownTestListOptions, ListProgressOptions, NextestConfig, ParseContext, PathMapper,
+    SessionContext, SessionInputs, ShowProgress, ShowTerminalProgress, TestFilter, TestListOptions,
+    TestSession, ThemeCharacters, UnfilteredTestCase, WriteStr,
+    errors::{KnownTestsBuildError, SessionBuildError},
+    evaluate_profile, force_or_new_run_id,
 };
 use semver::Version;
 use std::io::{self, IsTerminal, Write};
@@ -108,13 +111,7 @@ impl Context {
         TestSession::build(
             ctx,
             profile,
-            SessionInputs {
-                binary_list: self.binaries.binary_list.clone(),
-                packages: &self.binaries.packages,
-                workspace_root: self.project_root.clone(),
-                env: EnvironmentMap::empty(),
-                path_mapper: PathMapper::noop(),
-            },
+            self.session_inputs(),
             filter,
             TestListOptions {
                 partitioner_builder: None,
@@ -135,6 +132,56 @@ impl Context {
                 ExpectedError::CreateTestListError { error }
             }
         })
+    }
+
+    /// Produces a session for `test_case` without listing the binary.
+    pub(crate) fn build_session_with_known_test<'a>(
+        &'a self,
+        ctx: &'a SessionContext,
+        profile: &'a EvaluatableProfile<'a>,
+        filter: &TestFilter,
+        filter_bound: FilterBound,
+        test_case: UnfilteredTestCase,
+    ) -> Result<TestSession<'a>> {
+        let known_tests = self
+            .binaries
+            .binary_list
+            .rust_binaries
+            .iter()
+            .map(|binary| (binary.id.clone(), id_ord_map! { test_case.clone() }))
+            .collect();
+
+        TestSession::build_with_known_tests(
+            ctx,
+            profile,
+            self.session_inputs(),
+            known_tests,
+            filter,
+            KnownTestListOptions {
+                partitioner_builder: None,
+                platform_filter: None,
+                filter_bound,
+            },
+        )
+        .map_err(|error| match error {
+            KnownTestsBuildError::FromMessages(error) => ExpectedError::FromMessagesError { error },
+            KnownTestsBuildError::CreateTestList(error) => {
+                ExpectedError::CreateTestListError { error }
+            }
+            error @ KnownTestsBuildError::BinaryMismatch { .. } => {
+                ExpectedError::KnownTestsMismatch { error }
+            }
+        })
+    }
+
+    fn session_inputs(&self) -> SessionInputs<'_> {
+        SessionInputs {
+            binary_list: self.binaries.binary_list.clone(),
+            packages: &self.binaries.packages,
+            workspace_root: self.project_root.clone(),
+            env: EnvironmentMap::empty(),
+            path_mapper: PathMapper::noop(),
+        }
     }
 }
 

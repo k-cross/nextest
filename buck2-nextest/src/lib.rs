@@ -31,9 +31,9 @@
 //! identically whether it was run by Buck2 or by `cargo nextest run`, and the
 //! nextest configuration in the repository keeps meaning what it says.
 //!
-//! Note that the run mode rebuilds the test list for its binary on every
-//! invocation, since the pipeline enumerates before it runs. That is one extra
-//! execution of the test binary per test.
+//! The run mode doesn't list the binary again: `list` writes what it needs to
+//! know about a test into the test's `filter`, so the binary is executed only
+//! to run the test, and not at all for an ignored one.
 
 pub mod cli;
 mod convert;

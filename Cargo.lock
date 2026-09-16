@@ -2759,6 +2759,7 @@ name = "nextest-session"
 version = "0.1.0"
 dependencies = [
  "camino",
+ "camino-tempfile",
  "guppy",
  "iddqd",
  "nextest-filtering",

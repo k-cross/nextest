@@ -23,10 +23,9 @@ use tracing::warn;
 /// Extra details for invoking a test binary, beyond its path.
 ///
 /// The program is always the test suite's binary path; this type carries what
-/// goes around it. Cargo produces an empty value, for which nextest's behavior
-/// is exactly as though this type did not exist.
-///
-/// See the [module-level documentation](self) for more.
+/// goes around it, such as a launcher's arguments, so that nextest's libtest
+/// arguments still come last. Cargo produces an empty value, for which
+/// nextest's behavior is exactly as though this type did not exist.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct TestBinaryInvocation {
     /// Arguments placed between the binary path and nextest's libtest

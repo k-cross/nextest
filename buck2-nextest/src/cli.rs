@@ -8,15 +8,16 @@
 //! rather than something a person types. The one part that has to be exactly
 //! right is the shape of the run command: Buck2 appends the test's `filter` as
 //! the final argument, so the command the rule emits ends with a bare
-//! `--test-name` and the appended value binds to it.
+//! `--listed-test` and the appended value binds to it.
 
 use crate::{
     convert::{TargetInput, to_binary_list},
     errors::Result,
     list::list,
+    output::ListedTestFilter,
     pipeline::Context,
     project_root,
-    run_one::run_one,
+    run_one::{TestSelection, run_one},
 };
 use camino::Utf8PathBuf;
 use clap::{Args, Parser, Subcommand};
@@ -100,15 +101,38 @@ struct RunArgs {
     #[command(flatten)]
     target: TargetArgs,
 
+    #[command(flatten)]
+    test: TestArgs,
+}
+
+#[derive(Debug, Args)]
+#[group(required = true, multiple = false)]
+struct TestArgs {
+    /// The test to run, as a `filter` that `buck2-nextest list` wrote.
+    ///
+    /// Buck2 appends this value to the rule's command. The binary is not listed
+    /// again.
+    #[arg(long, value_name = "FILTER", value_parser = parse_listed_test)]
+    listed_test: Option<ListedTestFilter>,
+
     /// The test to run, named exactly.
     ///
-    /// Buck2 appends this as the final argument of the command, so the rule
-    /// emits the flag with no value and Buck2 supplies it. The value is a test
-    /// name this binary itself listed, and `allow_hyphen_values` keeps that
-    /// round trip total rather than resting on test names never looking like
-    /// flags.
+    /// The binary is listed first to find the test.
     #[arg(long, value_name = "NAME", allow_hyphen_values = true)]
-    test_name: String,
+    test_name: Option<String>,
+}
+
+impl TestArgs {
+    fn into_selection(self) -> TestSelection {
+        match (self.listed_test, self.test_name) {
+            (Some(listed), None) => TestSelection::Listed(listed),
+            (None, Some(name)) => TestSelection::Named(name),
+            (listed, name) => unreachable!(
+                "clap requires exactly one of --listed-test and --test-name, \
+                 got {listed:?} and {name:?}"
+            ),
+        }
+    }
 }
 
 impl App {
@@ -121,12 +145,17 @@ impl App {
                 Ok(0)
             }
             Command::Run(args) => {
-                let test_name = args.test_name;
+                let selection = args.test.into_selection();
                 let cx = args.target.into_context()?;
-                run_one(&cx, &test_name, cli_args, writer)
+                run_one(&cx, selection, cli_args, writer)
             }
         }
     }
+}
+
+fn parse_listed_test(value: &str) -> Result<ListedTestFilter, String> {
+    serde_json::from_str(value)
+        .map_err(|error| format!("not a filter written by `buck2-nextest list`: {error}"))
 }
 
 /// Splits a `KEY=VALUE` argument, which is how Buck2's rule passes a target's
@@ -174,53 +203,100 @@ impl TargetArgs {
 mod tests {
     use super::*;
     use clap::Parser;
+    use nextest_session::{RustTestKind, TestCaseName};
 
     fn parse(args: &[&str]) -> App {
         App::try_parse_from(args).expect("arguments parse")
     }
 
-    /// The shape the rule emits: `--test-name` last, with Buck2's appended
-    /// filter binding to it.
-    #[test]
-    fn buck2_appends_the_filter_as_the_test_name() {
-        let app = parse(&[
-            "buck2-nextest",
-            "run",
-            "--label",
-            "root//:demo",
-            "--program",
-            "out/demo",
-            "--test-name",
-            "tests::adds_two_numbers",
-        ]);
-
+    fn parse_run(test_args: &[&str]) -> Result<RunArgs, clap::Error> {
+        let args = [
+            &[
+                "buck2-nextest",
+                "run",
+                "--label",
+                "root//:demo",
+                "--program",
+                "out/demo",
+            ][..],
+            test_args,
+        ]
+        .concat();
+        let app = App::try_parse_from(args)?;
         let Command::Run(args) = app.command else {
             panic!("expected the run command");
         };
-        assert_eq!(args.test_name, "tests::adds_two_numbers");
+        Ok(args)
+    }
+
+    /// The shape the rule emits: `--listed-test` last, with Buck2's appended
+    /// filter binding to it.
+    #[test]
+    fn buck2_appends_the_filter_as_the_listed_test() {
+        let args = parse_run(&[
+            "--listed-test",
+            r#"{"name":"tests::adds_two_numbers","kind":"test","ignored":true}"#,
+        ])
+        .expect("arguments parse");
+
+        assert_eq!(
+            args.test.listed_test,
+            Some(ListedTestFilter {
+                name: TestCaseName::new("tests::adds_two_numbers"),
+                kind: RustTestKind::TEST,
+                ignored: true,
+            })
+        );
+        assert_eq!(args.test.test_name, None);
         assert_eq!(args.target.label, "root//:demo");
         assert_eq!(args.target.program, "out/demo");
     }
 
-    /// A test name that looks like a flag still binds as a value, since Buck2
-    /// appends it positionally after `--test-name`.
+    /// Whatever `list` writes, `run` reads back as the same test.
+    #[test]
+    fn a_listed_filter_round_trips() {
+        let filter = ListedTestFilter {
+            name: TestCaseName::new(r#"--odd "name": test"#),
+            kind: RustTestKind::BENCH,
+            ignored: false,
+        };
+        let encoded = serde_json::to_string(&filter).expect("the filter serializes");
+        let args = parse_run(&["--listed-test", &encoded]).expect("arguments parse");
+
+        assert_eq!(args.test.listed_test, Some(filter));
+    }
+
+    #[test]
+    fn a_listed_test_must_be_a_filter_from_the_listing() {
+        for value in [
+            "tests::adds_two_numbers",
+            r#"{"name":"tests::adds_two_numbers","kind":"test"}"#,
+            r#"{"name":"tests::adds_two_numbers","kind":"test","ignored":false,"extra":1}"#,
+        ] {
+            parse_run(&["--listed-test", value])
+                .expect_err(&format!("`{value}` is not a filter from the listing"));
+        }
+    }
+
+    /// A test name that looks like a flag still binds as a value.
     #[test]
     fn a_test_name_may_look_like_a_flag() {
-        let app = parse(&[
-            "buck2-nextest",
-            "run",
-            "--label",
-            "root//:demo",
-            "--program",
-            "out/demo",
-            "--test-name",
-            "--not-a-flag",
-        ]);
+        let args = parse_run(&["--test-name", "--not-a-flag"]).expect("arguments parse");
 
-        let Command::Run(args) = app.command else {
-            panic!("expected the run command");
-        };
-        assert_eq!(args.test_name, "--not-a-flag");
+        assert_eq!(args.test.test_name.as_deref(), Some("--not-a-flag"));
+        assert_eq!(args.test.listed_test, None);
+    }
+
+    #[test]
+    fn exactly_one_test_is_selected() {
+        parse_run(&[]).expect_err("a test must be selected");
+        parse_run(&[
+            "--test-name",
+            "tests::adds_two_numbers",
+            "--listed-test",
+            r#"{"name":"tests::adds_two_numbers","kind":"test","ignored":false}"#,
+        ])
+        .expect_err("only one test may be selected");
     }
 
     #[test]

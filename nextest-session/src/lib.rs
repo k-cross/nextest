@@ -39,7 +39,9 @@
 //! 3. [`parse_filtersets`] compiles filterset inputs against the profile's
 //!    known test groups, reporting every bad one at once.
 //! 4. [`TestSession::build`] executes the binaries to enumerate their tests,
-//!    producing a [`TestList`] to write out (for listing) or run.
+//!    producing a [`TestList`] to write out (for listing) or run. A build
+//!    system that already knows each binary's tests can use
+//!    [`TestSession::build_with_known_tests`], which skips executing them.
 //! 5. [`TestSession::build_runner`] and [`run_to_completion`] execute the
 //!    tests, feeding every event to the frontend's reporter and optional sink.
 //! 6. [`final_outcome`] maps the finished run to the canonical exit-code
@@ -193,11 +195,11 @@ pub use errors::into_report_errors;
 pub use filter::parse_filtersets;
 pub use guppy::PackageId;
 pub use iddqd::IdOrdMap;
-pub use input::{SessionInputs, TestListOptions};
+pub use input::{KnownTestListOptions, SessionInputs, TestListOptions};
 pub use nextest_filtering::{Filterset, FiltersetKind, KnownGroups, ParseContext};
 pub use nextest_metadata::{
     BuildPlatform, FilterMatch, MismatchReason, NextestExitCode, RustBinaryId, RustTestBinaryKind,
-    TestCaseName,
+    RustTestKind, TestCaseName,
 };
 pub use nextest_runner::{
     cargo_config::EnvironmentMap,
@@ -216,7 +218,7 @@ pub use nextest_runner::{
         BinaryList, BinaryListState, ListProgressOptions, OutputFormat, OwnedTestInstanceId,
         PackageInfo, RustBuildMeta, RustTestBinary, RustTestSuite, SerializableFormat,
         TestBinaryInvocation, TestExecuteContext, TestInstance, TestInstanceId, TestList,
-        TestListState,
+        TestListState, UnfilteredTestCase,
     },
     output_spec::{LiveSpec, OutputSpec},
     partition::PartitionerBuilder,
