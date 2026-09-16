@@ -9,10 +9,14 @@
 //! real pipeline: the profile's retries, slow-test handling, leak detection,
 //! and the environment a test sees all apply exactly as they would under
 //! `cargo nextest run`.
+//!
+//! The filter describes the test, so the binary is not listed again.
 
 use crate::{
     errors::{ExpectedError, Result},
-    output::{BuckTestStatus, TestResult, result_from_finished, result_from_skipped},
+    output::{
+        BuckTestStatus, ListedTestFilter, TestResult, result_from_finished, result_from_skipped,
+    },
     pipeline::{Context, PlainStderrWriter},
 };
 use nextest_session::{
@@ -23,11 +27,30 @@ use nextest_session::{
 };
 use std::convert::Infallible;
 
+/// The test a run is about.
+#[derive(Debug)]
+pub(crate) enum TestSelection {
+    /// A test as `buck2-nextest list` described it.
+    Listed(ListedTestFilter),
+
+    /// A test named by hand, found by listing the binary.
+    Named(String),
+}
+
+impl TestSelection {
+    fn test_name(&self) -> &str {
+        match self {
+            Self::Listed(listed) => listed.name.as_str(),
+            Self::Named(name) => name,
+        }
+    }
+}
+
 /// Runs one test, writing its result as the JSON Buck2's `parse_test_result`
 /// reads, and returns the process exit code.
 pub(crate) fn run_one(
     cx: &Context,
-    test_name: &str,
+    selection: TestSelection,
     cli_args: Vec<String>,
     writer: &mut dyn WriteStr,
 ) -> Result<i32> {
@@ -35,6 +58,7 @@ pub(crate) fn run_one(
     let early_profile = cx.load_profile(&config)?;
     let profile = cx.evaluate_profile(early_profile)?;
     let ctx = cx.session_context();
+    let test_name = selection.test_name();
 
     let mut patterns = TestFilterPatterns::new(Vec::new());
     patterns.add_exact_pattern(test_name.to_owned());
@@ -47,7 +71,16 @@ pub(crate) fn run_one(
     )
     .map_err(|error| ExpectedError::TestFilterBuildError { error })?;
 
-    let session = cx.build_session(&ctx, &profile, &filter, FilterBound::All)?;
+    let session = match &selection {
+        TestSelection::Listed(listed) => cx.build_session_with_known_test(
+            &ctx,
+            &profile,
+            &filter,
+            FilterBound::All,
+            listed.to_test_case(),
+        )?,
+        TestSelection::Named(_) => cx.build_session(&ctx, &profile, &filter, FilterBound::All)?,
+    };
 
     let runner = session
         .build_runner(
@@ -115,10 +148,10 @@ pub(crate) fn run_one(
 
 /// Records the result for the one test this invocation is about.
 ///
-/// The name is matched rather than taking whatever arrives, because the other
-/// tests in the binary are reported too: everything the exact pattern did not
-/// select is skipped, and each skip is an event. Taking the last one to arrive
-/// would answer Buck2's question about one test with another test's result.
+/// The name is matched rather than taking whatever arrives, because a test
+/// named by hand is found by listing the whole binary, and every other test in
+/// it is then reported as skipped. Taking the last one to arrive would answer
+/// Buck2's question about one test with another test's result.
 fn capture(
     label: &str,
     test_name: &str,

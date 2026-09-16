@@ -63,7 +63,13 @@ In order:
 3. `parse_filtersets` compiles filterset inputs against the profile's known
    test groups, reporting every bad one at once.
 4. `TestSession::build` executes the binaries to enumerate their tests,
-   producing a `TestList` to write out (for listing) or run.
+   producing a `TestList` to write out (for listing) or run. A build system
+   that already knows each binary's tests uses
+   `TestSession::build_with_known_tests` instead, which filters them the same
+   way without executing anything. `buck2-nextest run` does this with the test
+   its own listing described. The trade-off is that nothing checks a known
+   test exists: a libtest binary asked for a test it doesn't have runs nothing
+   and succeeds.
 5. `TestSession::build_runner` and `run_to_completion` execute the tests,
    feeding every event to the frontend's reporter — so per-test process
    isolation, retries, timeouts, and leak detection work identically under

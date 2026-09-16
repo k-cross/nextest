@@ -20,7 +20,9 @@ of the usual `ExternalRunnerTestInfo`. Buck2 then runs two commands itself, as o
 actions:
 
 1. `buck2-nextest list` once per test target, to find out which tests the binary contains.
-2. `buck2-nextest run` once per discovered test, with that test's name appended.
+2. `buck2-nextest run` once per discovered test, with that test's listing entry appended. The entry
+   describes the test, including whether it is ignored, so `run` executes the binary only to run the
+   test, without listing the binary again.
 
 Each command writes JSON that Buck2 parses through the rule's Starlark callbacks. Those callbacks
 cannot run anything, so all the judgement lives in `buck2-nextest` and they are left as
@@ -136,8 +138,14 @@ runner.
 
 ## Ignored tests
 
-An `#[ignore]`d test is listed rather than hidden, and reported as skipped when Buck2 asks for it.
-A row Buck2 never shows would be indistinguishable from a test that does not exist.
+An `#[ignore]`d test is listed rather than hidden, and reported as skipped. A row Buck2 never shows
+would be indistinguishable from a test that does not exist.
+
+The listing entry for an ignored test carries `"status": "SKIP"` and a message. A Buck2 that
+understands these reports the skip straight from the listing, without scheduling an action for the
+test. No Buck2 release does yet (see [Buck2 support](#buck2-support)); current versions ignore both
+keys and schedule an action for every listed test. `run` then reports the same skip, with the same
+message, without executing the test binary.
 
 ## What it does and does not do
 
@@ -151,9 +159,13 @@ Some limits follow from Buck2 owning the run:
 * **Rust targets only.** Nextest lists and runs tests over the libtest protocol.
 * **Nothing that spans tests.** Test groups, global fail-fast, partitioning, and a run-level JUnit
   report have no meaning when each test is a separate action. Buck2's own scheduling replaces them.
-* **A test binary is listed once per run, and again for each of its tests.** The pipeline enumerates
-  before it runs, so each per-test action re-lists its binary. This is the cost of running the real
-  pipeline per test.
+* **On current Buck2, every listed test is an action, ignored tests included.** An ignored test's
+  action is cheap, but under remote execution it still transfers the test binary, which is one of
+  the action's inputs. See [Ignored tests](#ignored-tests).
+* **A listed test is trusted to exist.** `run` doesn't list the binary to check, so if a test named
+  in a listing entry isn't in the binary, the binary decides what happens. A libtest binary runs no
+  tests and exits successfully, which is reported as a pass. Buck2 lists and runs the same binary,
+  so the two agree in normal use.
 * **No `buck2 test -- <nextest args>` passthrough.** Buck2 builds the command line; configure
   nextest through the toolchain and `.config/nextest.toml` instead.
 
@@ -173,6 +185,11 @@ Two bugs affect any target using it, neither of them nextest's:
 Both reproduce with a rule that returns `InternalRunnerTestInfo` and runs `/bin/echo`, with nextest
 nowhere in the picture. Against a Buck2 carrying both fixes, the example project in
 `buck2-nextest/buck/` reports `Pass 6, Skip 1`, and a failing test exits 32.
+
+Separately, reporting an ignored test without running an action needs Buck2 to accept a result in a
+listing entry, which it doesn't yet. Until it does, the listing's `status` and `message` are ignored
+and each ignored test costs an action, as described under
+[what it does and does not do](#what-it-does-and-does-not-do).
 
 ## An example
 

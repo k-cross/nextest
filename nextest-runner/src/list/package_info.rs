@@ -25,7 +25,8 @@ use std::collections::BTreeSet;
 
 /// Information about the package a test binary belongs to.
 ///
-/// See the [module-level documentation](self) for why this exists.
+/// Cargo-based callers derive this from a package graph. Build systems without
+/// one construct it directly.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PackageInfo {
     /// This is the package ID from `cargo metadata`. It is used to

@@ -88,6 +88,9 @@ pub struct RustTestArtifact<'g> {
     pub build_platform: BuildPlatform,
 
     /// Extra details for invoking this binary.
+    ///
+    /// `invocation.cwd` is always `None` here: the directory is resolved into
+    /// [`Self::cwd`].
     pub invocation: TestBinaryInvocation,
 }
 
@@ -120,8 +123,9 @@ impl<'g> RustTestArtifact<'g> {
                 }
             })?;
 
+            // The build system's directory moves into `cwd`, which summaries
+            // record, so the invocation no longer carries it.
             let mut invocation = binary.invocation.clone();
-            // directory containing the manifest.
             let cwd = invocation
                 .cwd
                 .take()
@@ -375,20 +379,14 @@ impl<'g> TestList<'g> {
         };
 
         // Phase 2: apply test-level filters and build suites.
-        //
-        // If the CLI filter uses group() predicates, precompute group
-        // memberships first so that group() evaluates correctly in a
-        // single pass (no re-evaluation needed).
-        let group_membership = if filter.has_group_predicates() {
-            let test_queries = Self::collect_test_queries_from_parsed(&parsed_binaries);
-            Some(profile.precompute_group_memberships(test_queries.into_iter()))
-        } else {
-            None
-        };
-        let groups = group_membership.as_ref().map(|g| g as &dyn GroupLookup);
-
-        let mut rust_suites = Self::build_suites(parsed_binaries, filter, &ecx, bound, groups);
-        Self::apply_partitioning(&mut rust_suites, partitioner_builder);
+        let rust_suites = Self::filter_parsed_binaries(
+            parsed_binaries,
+            filter,
+            partitioner_builder,
+            profile,
+            &ecx,
+            bound,
+        );
 
         let test_count = rust_suites
             .iter()
@@ -406,6 +404,105 @@ impl<'g> TestList<'g> {
             test_count,
             skip_counts: OnceLock::new(),
         })
+    }
+
+    /// Creates a new test list from test cases already known to be in each
+    /// binary, filtering them exactly as [`Self::new`] does.
+    ///
+    /// No binary is executed, so nothing checks that a test case exists. One
+    /// that doesn't is still run, and libtest then runs nothing and succeeds.
+    #[expect(clippy::too_many_arguments)]
+    pub fn new_with_known_tests<I>(
+        test_artifacts: I,
+        rust_build_meta: RustBuildMeta<TestListState>,
+        filter: &TestFilter,
+        partitioner_builder: Option<&PartitionerBuilder>,
+        workspace_root: Utf8PathBuf,
+        env: EnvironmentMap,
+        profile: &impl ListProfile,
+        bound: FilterBound,
+    ) -> Result<Self, CreateTestListError>
+    where
+        I: IntoIterator<Item = (RustTestArtifact<'g>, IdOrdMap<UnfilteredTestCase>)>,
+    {
+        let (updated_dylib_path, build_dylib_paths) = Self::create_dylib_path(&rust_build_meta)?;
+        let ecx = profile.filterset_ecx();
+
+        let parsed_binaries = test_artifacts
+            .into_iter()
+            .map(|(test_binary, test_cases)| {
+                let binary_match =
+                    filter.filter_binary_match(&test_binary.to_binary_query(), &ecx, bound);
+                match binary_match {
+                    FilterBinaryMatch::Definite | FilterBinaryMatch::Possible => {
+                        debug!(
+                            "using known test cases for binary \
+                            (match result is {binary_match:?}): {}",
+                            test_binary.binary_id,
+                        );
+                        ParsedTestBinary::Listed {
+                            artifact: test_binary,
+                            test_cases: test_cases.into_iter().collect(),
+                        }
+                    }
+                    FilterBinaryMatch::Mismatch { reason } => {
+                        debug!("skipping test binary: {reason}: {}", test_binary.binary_id);
+                        Self::make_skipped(test_binary, reason)
+                    }
+                }
+            })
+            .collect();
+
+        let rust_suites = Self::filter_parsed_binaries(
+            parsed_binaries,
+            filter,
+            partitioner_builder,
+            profile,
+            &ecx,
+            bound,
+        );
+
+        let test_count = rust_suites
+            .iter()
+            .map(|suite| suite.status.test_count())
+            .sum();
+
+        Ok(Self {
+            rust_suites,
+            mode: filter.mode(),
+            workspace_root,
+            env,
+            rust_build_meta,
+            updated_dylib_path,
+            build_dylib_paths,
+            test_count,
+            skip_counts: OnceLock::new(),
+        })
+    }
+
+    /// Applies test-level filters and partitioning.
+    fn filter_parsed_binaries(
+        parsed_binaries: Vec<ParsedTestBinary<'g>>,
+        filter: &TestFilter,
+        partitioner_builder: Option<&PartitionerBuilder>,
+        profile: &impl ListProfile,
+        ecx: &EvalContext<'_>,
+        bound: FilterBound,
+    ) -> IdOrdMap<RustTestSuite<'g>> {
+        // If the CLI filter uses group() predicates, precompute group
+        // memberships first so that group() evaluates correctly in a
+        // single pass (no re-evaluation needed).
+        let group_membership = if filter.has_group_predicates() {
+            let test_queries = Self::collect_test_queries_from_parsed(&parsed_binaries);
+            Some(profile.precompute_group_memberships(test_queries.into_iter()))
+        } else {
+            None
+        };
+        let groups = group_membership.as_ref().map(|g| g as &dyn GroupLookup);
+
+        let mut rust_suites = Self::build_suites(parsed_binaries, filter, ecx, bound, groups);
+        Self::apply_partitioning(&mut rust_suites, partitioner_builder);
+        rust_suites
     }
 
     /// Creates a new test list with the given binary names and outputs.
@@ -816,7 +913,7 @@ impl<'g> TestList<'g> {
         let mut test_cases = Vec::new();
 
         for (test_name, kind) in Self::parse(&test_binary.binary_id, non_ignored.as_ref())? {
-            test_cases.push(ParsedTestCase {
+            test_cases.push(UnfilteredTestCase {
                 name: TestCaseName::new(test_name),
                 kind,
                 ignored: false,
@@ -828,7 +925,7 @@ impl<'g> TestList<'g> {
             // * just ignored tests if --ignored is passed in
             // * all tests, both ignored and non-ignored, if --ignored is not passed in
             // Adding ignored tests after non-ignored ones makes everything resolve correctly.
-            test_cases.push(ParsedTestCase {
+            test_cases.push(UnfilteredTestCase {
                 name: TestCaseName::new(test_name),
                 kind,
                 ignored: true,
@@ -1349,6 +1446,9 @@ pub struct RustTestSuite<'g> {
     pub non_test_binaries: BTreeSet<(String, Utf8PathBuf)>,
 
     /// Extra details for invoking this binary.
+    ///
+    /// `invocation.cwd` is always `None` here: the directory is resolved into
+    /// [`Self::cwd`].
     pub invocation: TestBinaryInvocation,
 
     /// Test suite status and test case names.
@@ -1478,19 +1578,19 @@ impl RustTestArtifact<'_> {
     }
 }
 
-/// A test binary whose output has been parsed but whose tests have not yet
-/// been filtered.
+/// A test binary whose test cases are known but have not yet been filtered.
 ///
 /// This is the intermediate representation between the parsing and filtering
 /// phases of test list construction.
 enum ParsedTestBinary<'g> {
-    /// The binary was executed and its test cases were parsed.
+    /// The binary's test cases are known, either from executing it or from the
+    /// caller.
     Listed {
         /// The original test artifact.
         artifact: RustTestArtifact<'g>,
 
-        /// Parsed test cases without filter results.
-        test_cases: Vec<ParsedTestCase>,
+        /// Test cases without filter results.
+        test_cases: Vec<UnfilteredTestCase>,
     },
 
     /// The binary was skipped during binary-level filtering.
@@ -1503,14 +1603,31 @@ enum ParsedTestBinary<'g> {
     },
 }
 
-/// A test case parsed from binary output, before filtering has been applied.
+/// A test case within a test binary, before filtering has been applied.
 ///
-/// Unlike [`RustTestCaseSummary`], this type has no `filter_match` field
-/// because the filter result has not been computed yet.
-struct ParsedTestCase {
-    name: TestCaseName,
-    kind: RustTestKind,
-    ignored: bool,
+/// Unlike [`RustTestCaseSummary`], this has no `filter_match`, since the
+/// filter has not been applied yet.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UnfilteredTestCase {
+    /// The name of the test case.
+    pub name: TestCaseName,
+
+    /// The kind of test case, as the binary lists it.
+    pub kind: RustTestKind,
+
+    /// Whether the test case is ignored.
+    ///
+    /// Must be accurate even for a test that runs, since an ignored test is
+    /// run with `--ignored`.
+    pub ignored: bool,
+}
+
+impl IdOrdItem for UnfilteredTestCase {
+    type Key<'a> = &'a TestCaseName;
+    fn key(&self) -> Self::Key<'_> {
+        &self.name
+    }
+    id_upcast!();
 }
 
 /// Serializable information about the status of and test cases within a test suite.
@@ -1995,7 +2112,10 @@ mod tests {
     use super::*;
     use crate::{
         cargo_config::{TargetDefinitionLocation, TargetTriple, TargetTripleSource},
-        config::scripts::{ScriptCommand, ScriptCommandEnvMap, ScriptCommandRelativeTo},
+        config::{
+            core::NextestConfig,
+            scripts::{ScriptCommand, ScriptCommandEnvMap, ScriptCommandRelativeTo},
+        },
         list::{
             RustTestBinary, SerializableFormat,
             test_helpers::{
@@ -2006,6 +2126,7 @@ mod tests {
         target_runner::PlatformRunnerSource,
         test_filter::{RunIgnored, TestFilterPatterns},
     };
+    use camino_tempfile::Utf8TempDir;
     use iddqd::id_ord_map;
     use indoc::indoc;
     use nextest_filtering::{CompiledExpr, Filterset, FiltersetKind, KnownGroups, ParseContext};
@@ -2485,6 +2606,280 @@ mod tests {
             }
             other => panic!("expected Listed status, got {other:?}"),
         }
+    }
+
+    /// Known test cases must produce the same suites as listing the same tests,
+    /// since callers use the two interchangeably. Binary-level filtering and the
+    /// profile's default filter apply to both.
+    /// A workspace whose `.config/nextest.toml` is `config_contents`, and what
+    /// building a test list under it needs.
+    struct KnownTestsSetup {
+        _workspace: Utf8TempDir,
+        config: NextestConfig,
+        build_platforms: BuildPlatforms,
+    }
+
+    impl KnownTestsSetup {
+        fn new(config_contents: &str) -> Self {
+            let workspace = Utf8TempDir::new().expect("created temp dir");
+            std::fs::create_dir(workspace.path().join(".config")).expect("created .config");
+            std::fs::write(
+                workspace.path().join(".config/nextest.toml"),
+                config_contents,
+            )
+            .expect("wrote config");
+
+            let config = NextestConfig::from_sources(
+                workspace.path(),
+                &ParseContext::without_graph(),
+                None,
+                &[][..],
+                &Default::default(),
+            )
+            .expect("config is valid");
+
+            Self {
+                _workspace: workspace,
+                config,
+                build_platforms: BuildPlatforms {
+                    host: HostPlatform {
+                        platform: TargetTriple::x86_64_unknown_linux_gnu().platform,
+                        libdir: PlatformLibdir::Available("/fake/libdir".into()),
+                    },
+                    target: None,
+                },
+            }
+        }
+
+        fn profile(&self) -> EvaluatableProfile<'_> {
+            self.config
+                .profile(NextestConfig::DEFAULT_PROFILE)
+                .expect("default profile exists")
+                .apply_build_platforms(&self.build_platforms)
+        }
+
+        fn artifact(
+            &self,
+            binary_name: &str,
+            build_platform: BuildPlatform,
+        ) -> RustTestArtifact<'static> {
+            RustTestArtifact {
+                binary_path: format!("/fake/{binary_name}").into(),
+                cwd: "/fake/cwd".into(),
+                package: package_info(),
+                binary_name: binary_name.to_owned(),
+                binary_id: RustBinaryId::new(&format!("fake-package::{binary_name}")),
+                kind: RustTestBinaryKind::LIB,
+                non_test_binaries: BTreeSet::new(),
+                build_platform,
+                invocation: TestBinaryInvocation::empty(),
+            }
+        }
+
+        fn build_meta(&self) -> RustBuildMeta<TestListState> {
+            RustBuildMeta::new("/fake", "/fake", self.build_platforms.clone())
+                .map_paths(&PathMapper::noop())
+        }
+    }
+
+    fn known_test_case(name: &str, kind: RustTestKind, ignored: bool) -> UnfilteredTestCase {
+        UnfilteredTestCase {
+            name: TestCaseName::new(name),
+            kind,
+            ignored,
+        }
+    }
+
+    fn filter_matches(test_list: &TestList<'_>) -> BTreeMap<String, FilterMatch> {
+        test_list
+            .iter_tests()
+            .map(|test| (test.name.to_string(), test.test_info.filter_match))
+            .collect()
+    }
+
+    #[test]
+    fn known_tests_match_listed_tests() {
+        let setup = KnownTestsSetup::new(
+            "[profile.default]\ndefault-filter = 'not test(=tests::outside_default)'\n",
+        );
+        let profile = setup.profile();
+        let pcx = ParseContext::without_graph();
+
+        let test_filter = TestFilter::new(
+            NextestRunMode::Test,
+            RunIgnored::Default,
+            TestFilterPatterns::default(),
+            vec![
+                Filterset::parse(
+                    "platform(target)".to_owned(),
+                    &pcx,
+                    FiltersetKind::Test,
+                    &KnownGroups::Known {
+                        custom_groups: HashSet::new(),
+                    },
+                )
+                .expect("filterset is valid"),
+            ],
+        )
+        .expect("filter is valid");
+
+        let non_ignored_output = indoc! {"
+            tests::runs: test
+            tests::outside_default: test
+            tests::ignored: test
+            benches::bench: benchmark
+        "};
+        let ignored_output = indoc! {"
+            tests::ignored: test
+        "};
+        let ecx = profile.filterset_ecx();
+        let listed = TestList::new_with_outputs(
+            [
+                (
+                    setup.artifact("binary", BuildPlatform::Target),
+                    &non_ignored_output,
+                    &ignored_output,
+                ),
+                (setup.artifact("host-only", BuildPlatform::Host), &"", &""),
+            ],
+            Utf8PathBuf::from("/fake/path"),
+            setup.build_meta(),
+            &test_filter,
+            None,
+            EnvironmentMap::empty(),
+            &ecx,
+            FilterBound::DefaultSet,
+        )
+        .expect("valid output");
+
+        let known = TestList::new_with_known_tests(
+            [
+                (
+                    setup.artifact("binary", BuildPlatform::Target),
+                    id_ord_map! {
+                        known_test_case("tests::runs", RustTestKind::TEST, false),
+                        known_test_case("tests::outside_default", RustTestKind::TEST, false),
+                        known_test_case("tests::ignored", RustTestKind::TEST, true),
+                        known_test_case("benches::bench", RustTestKind::BENCH, false),
+                    },
+                ),
+                (
+                    setup.artifact("host-only", BuildPlatform::Host),
+                    IdOrdMap::new(),
+                ),
+            ],
+            setup.build_meta(),
+            &test_filter,
+            None,
+            Utf8PathBuf::from("/fake/path"),
+            EnvironmentMap::empty(),
+            &profile,
+            FilterBound::DefaultSet,
+        )
+        .expect("known tests produce a test list");
+
+        assert_eq!(known.rust_suites, listed.rust_suites);
+        assert_eq!(known.test_count(), listed.test_count());
+
+        assert_eq!(
+            filter_matches(&known),
+            BTreeMap::from([
+                ("benches::bench".to_owned(), FilterMatch::Matches),
+                (
+                    "tests::ignored".to_owned(),
+                    FilterMatch::Mismatch {
+                        reason: MismatchReason::Ignored,
+                    },
+                ),
+                (
+                    "tests::outside_default".to_owned(),
+                    FilterMatch::Mismatch {
+                        reason: MismatchReason::DefaultFilter,
+                    },
+                ),
+                ("tests::runs".to_owned(), FilterMatch::Matches),
+            ]),
+        );
+
+        let host_only = known
+            .get_suite(&RustBinaryId::new("fake-package::host-only"))
+            .expect("the host-only suite exists");
+        assert_eq!(
+            host_only.status,
+            RustTestSuiteStatus::Skipped {
+                reason: BinaryMismatchReason::Expression,
+            },
+        );
+    }
+
+    /// A `group()` predicate makes filtering precompute group memberships
+    /// first. That step is only reached through the shared filtering path, so
+    /// known tests must go through it too.
+    #[test]
+    fn known_tests_support_group_predicates() {
+        let setup = KnownTestsSetup::new(indoc! {r#"
+            [[profile.default.overrides]]
+            filter = "test(=tests::serial)"
+            test-group = "serial"
+
+            [test-groups.serial]
+            max-threads = 1
+        "#});
+        let profile = setup.profile();
+        let pcx = ParseContext::without_graph();
+
+        let test_filter = TestFilter::new(
+            NextestRunMode::Test,
+            RunIgnored::Default,
+            TestFilterPatterns::default(),
+            vec![
+                Filterset::parse(
+                    "group(serial)".to_owned(),
+                    &pcx,
+                    FiltersetKind::Test,
+                    &KnownGroups::Known {
+                        custom_groups: HashSet::from(["serial".to_owned()]),
+                    },
+                )
+                .expect("filterset is valid"),
+            ],
+        )
+        .expect("filter is valid");
+        assert!(
+            test_filter.has_group_predicates(),
+            "the filter uses group(), which is what this test is about"
+        );
+
+        let known = TestList::new_with_known_tests(
+            [(
+                setup.artifact("binary", BuildPlatform::Target),
+                id_ord_map! {
+                    known_test_case("tests::serial", RustTestKind::TEST, false),
+                    known_test_case("tests::parallel", RustTestKind::TEST, false),
+                },
+            )],
+            setup.build_meta(),
+            &test_filter,
+            None,
+            Utf8PathBuf::from("/fake/path"),
+            EnvironmentMap::empty(),
+            &profile,
+            FilterBound::All,
+        )
+        .expect("known tests produce a test list");
+
+        assert_eq!(
+            filter_matches(&known),
+            BTreeMap::from([
+                (
+                    "tests::parallel".to_owned(),
+                    FilterMatch::Mismatch {
+                        reason: MismatchReason::Expression,
+                    },
+                ),
+                ("tests::serial".to_owned(), FilterMatch::Matches),
+            ]),
+        );
     }
 
     /// The libtest arguments must stay last, so a suite's leading args go
@@ -3209,12 +3604,12 @@ mod tests {
                     invocation: TestBinaryInvocation::empty(),
                 },
                 test_cases: vec![
-                    ParsedTestCase {
+                    UnfilteredTestCase {
                         name: TestCaseName::new("serial_test"),
                         kind: RustTestKind::TEST,
                         ignored: false,
                     },
-                    ParsedTestCase {
+                    UnfilteredTestCase {
                         name: TestCaseName::new("parallel_test"),
                         kind: RustTestKind::TEST,
                         ignored: false,
