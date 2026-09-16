@@ -104,3 +104,34 @@ fn buck2_can_filter_the_example_by_target() {
         "only the integration test's tests ran:\n{stderr}"
     );
 }
+
+/// A real failure is reported as one, with the exit code Buck2 uses for it.
+///
+/// The failing target lives in its own package, `example-failure`, so this scenario never touches
+/// `//example`, whose tests all pass.
+#[test]
+fn buck2_reports_a_failing_test() {
+    let Some(project) = buck_project() else {
+        return;
+    };
+
+    let output = buck2_test(&project, &["//example-failure/..."]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert_eq!(
+        output.status.code(),
+        Some(32),
+        "a failing test exits 32, got {:?}:\n{stderr}",
+        output.status.code()
+    );
+
+    assert!(
+        stderr.contains("Fail 1"),
+        "the failure is reported in the summary:\n{stderr}"
+    );
+
+    assert!(
+        stderr.contains("always_fails"),
+        "the failing test is named in the output:\n{stderr}"
+    );
+}
