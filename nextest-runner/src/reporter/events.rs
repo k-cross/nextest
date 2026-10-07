@@ -2308,6 +2308,13 @@ impl CancelReason {
         }
     }
 }
+
+impl fmt::Display for CancelReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.to_static_str())
+    }
+}
+
 /// The kind of unit of work that nextest is executing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UnitKind {
