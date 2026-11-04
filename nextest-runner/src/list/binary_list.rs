@@ -1378,17 +1378,13 @@ mod tests {
         test_target: TestTarget,
     ) -> serde_json::Value {
         let package = package_info();
-        let src_path = package
-            .manifest_path
-            .parent()
-            .expect("manifest path has a parent")
-            .join("src/lib.rs");
+        let src_path = package.manifest_dir.join("src/lib.rs");
         let is_test = test_target.as_bool();
 
         json!({
             "reason": "compiler-artifact",
             "package_id": PACKAGE_METADATA_ID,
-            "manifest_path": package.manifest_path,
+            "manifest_path": package.manifest_dir.join("Cargo.toml"),
             "target": {
                 "name": name,
                 "kind": kind,

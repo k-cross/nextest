@@ -20,9 +20,10 @@
 //!   along with a [`RustBuildMeta`] describing the build.
 //! * [`PackageInfo`], one per package named by a binary's `package_id`. A
 //!   build system without Cargo's package vocabulary synthesizes these; see
-//!   how `buck2-nextest` derives them from Buck2 labels.
+//!   how `buck2-nextest` derives them from Buck2 labels. Its `manifest_dir`
+//!   is the directory the package's tests run in.
 //! * [`TestBinaryInvocation`], per binary, for launchers that need extra
-//!   leading arguments, environment variables, or a working directory.
+//!   leading arguments or environment variables.
 //! * A workspace root, and [`BuildPlatforms`] for the host and target.
 //!
 //! # What the pipeline provides
@@ -33,9 +34,8 @@
 //!    `.config/nextest.toml` under the workspace root, with a [`ParseContext`]
 //!    -- [`ParseContext::without_graph`] when there is no Cargo package graph,
 //!    which disables the package-graph filterset predicates and nothing else.
-//! 2. [`evaluate_profile`] turns an [`EarlyProfile`] into an
-//!    [`EvaluatableProfile`], creating the profile's store directory if it
-//!    writes a JUnit report.
+//! 2. [`EarlyProfile::apply_build_platforms`] turns the profile into an
+//!    [`EvaluatableProfile`].
 //! 3. [`parse_filtersets`] compiles filterset inputs against the profile's
 //!    known test groups, reporting every bad one at once.
 //! 4. [`TestSession::build`] executes the binaries to enumerate their tests,
@@ -43,7 +43,7 @@
 //!    system that already knows each binary's tests can use
 //!    [`TestSession::build_with_known_tests`], which skips executing them.
 //! 5. [`TestSession::build_runner`] and [`run_to_completion`] execute the
-//!    tests, feeding every event to the frontend's reporter and optional sink.
+//!    tests, showing every event to the frontend's observer and reporter.
 //! 6. [`final_outcome`] maps the finished run to the canonical exit-code
 //!    policy, shared so frontends cannot drift apart.
 //!
@@ -67,11 +67,11 @@
 //!     RunIgnored, RustBinaryId, RustBuildMeta, RustTestBinary, RustTestBinaryKind,
 //!     SessionContext, SessionInputs, ShowProgress, ShowTerminalProgress, SignalHandlerKind,
 //!     StructuredReporter, TestBinaryInvocation, TestFilter, TestFilterPatterns, TestListOptions,
-//!     TestRunnerBuilder, TestSession, ThemeCharacters, evaluate_profile, final_outcome,
-//!     force_or_new_run_id, run_to_completion,
+//!     TestRunnerBuilder, TestSession, ThemeCharacters, final_outcome, force_or_new_run_id,
+//!     run_to_completion,
 //! };
 //! use semver::Version;
-//! use std::{convert::Infallible, sync::Arc};
+//! use std::sync::Arc;
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let project_root = Utf8PathBuf::from("/path/to/project");
@@ -80,19 +80,12 @@
 //! // have an entry in `packages`.
 //! let package_id = "my-build//:my-test".to_owned();
 //! let mut packages = IdOrdMap::new();
-//! packages.insert_overwrite(PackageInfo {
-//!     id: PackageId::new(package_id.clone()),
-//!     name: "my-test".to_owned(),
-//!     version: Version::new(0, 0, 0),
-//!     authors: Vec::new(),
-//!     description: None,
-//!     homepage: None,
-//!     license: None,
-//!     license_file: None,
-//!     repository: None,
-//!     minimum_rust_version: None,
-//!     manifest_path: project_root.join("BUILD"),
-//! });
+//! packages.insert_overwrite(PackageInfo::new(
+//!     PackageId::new(package_id.clone()),
+//!     "my-test".to_owned(),
+//!     Version::new(0, 0, 0),
+//!     project_root.clone(),
+//! ));
 //! let build_platforms = BuildPlatforms::new_with_no_target()?;
 //! let binary_list = Arc::new(BinaryList {
 //!     rust_build_meta: RustBuildMeta::new(&project_root, &project_root, build_platforms),
@@ -116,10 +109,9 @@
 //!     &[],
 //!     &ConfigExperimental::from_env(),
 //! )?;
-//! let profile = evaluate_profile(
-//!     config.profile(NextestConfig::DEFAULT_PROFILE)?,
-//!     &binary_list.rust_build_meta.build_platforms,
-//! )?;
+//! let profile = config
+//!     .profile(NextestConfig::DEFAULT_PROFILE)?
+//!     .apply_build_platforms(&binary_list.rust_build_meta.build_platforms);
 //!
 //! // Build the test list.
 //! let filter = TestFilter::new(
@@ -168,13 +160,12 @@
 //!     ReporterOutput::Terminal,
 //!     StructuredReporter::new(),
 //! );
-//! let executed = run_to_completion(runner, reporter, false, |_event| Ok::<_, Infallible>(()))?;
+//! let executed = run_to_completion(runner, reporter, false, |_event| {})?;
 //! match final_outcome(
 //!     NextestRunMode::Test,
 //!     executed.outcome,
 //!     Some(NoTestsBehavior::Fail),
 //!     None,
-//!     false,
 //! ) {
 //!     Ok(()) => Ok(()),
 //!     Err(failure) => std::process::exit(failure.exit_code()),
@@ -187,11 +178,9 @@ pub mod errors;
 mod filter;
 mod input;
 mod outcome;
-mod profile;
 mod session;
 
 pub use context::SessionContext;
-pub use errors::into_report_errors;
 pub use filter::parse_filtersets;
 pub use guppy::PackageId;
 pub use iddqd::IdOrdMap;
@@ -203,14 +192,7 @@ pub use nextest_metadata::{
 };
 pub use nextest_runner::{
     cargo_config::EnvironmentMap,
-    config::{
-        core::{ConfigExperimental, EarlyProfile, EvaluatableProfile, NextestConfig, get_num_cpus},
-        elements::{
-            FlakyResult, JunitFlakyFailStatus, LeakTimeoutResult, ReportSkipPolicy,
-            SlowTimeoutResult, TestGroup,
-        },
-        scripts::ScriptId,
-    },
+    config::core::{ConfigExperimental, EarlyProfile, EvaluatableProfile, NextestConfig},
     double_spawn::DoubleSpawnInfo,
     helpers::{ShowTerminalProgress, ThemeCharacters, force_or_new_run_id, plural},
     input::InputHandlerKind,
@@ -220,24 +202,23 @@ pub use nextest_runner::{
         TestBinaryInvocation, TestExecuteContext, TestInstance, TestInstanceId, TestList,
         TestListState, UnfilteredTestCase,
     },
-    output_spec::{LiveSpec, OutputSpec},
+    output_spec::LiveSpec,
     partition::PartitionerBuilder,
     platform::BuildPlatforms,
     reporter::{
         Reporter, ReporterBuilder, ReporterOutput, ReporterStats, ShowProgress, events,
-        events::{FinalRunStats, ReporterEvent, RunFailureStep, RunOutcome, RunStats},
+        events::{ReporterEvent, RunOutcome},
         structured::StructuredReporter,
     },
     reuse_build::PathMapper,
     run_mode::NextestRunMode,
-    runner::{StressCount, TestRunner, TestRunnerBuilder, VersionEnvVars},
+    runner::{TestRunner, TestRunnerBuilder, VersionEnvVars},
     signal::SignalHandlerKind,
     target_runner::TargetRunner,
     test_filter::{FilterBound, RunIgnored, TestFilter, TestFilterPatterns},
-    test_output::{ChildExecutionOutput, ChildOutput, ChildSingleOutput},
+    test_output::ChildSingleOutput,
     write_str::WriteStr,
 };
 pub use outcome::{NoTestsBehavior, RunFailure, final_outcome};
-pub use profile::{create_junit_store_dir, evaluate_profile};
 pub use quick_junit::ReportUuid;
 pub use session::{ExecutedRun, TestSession, run_to_completion};

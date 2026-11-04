@@ -17,6 +17,7 @@ camino.workspace = true
 # integration supplies.
 guppy.workspace = true
 iddqd.workspace = true
+itertools.workspace = true
 nextest-filtering = { version = "=0.23.0", path = "../nextest-filtering" }
 nextest-metadata = { version = "=0.15.0", path = "../nextest-metadata" }
 nextest-runner = { version = "=0.129.0", path = "../nextest-runner" }

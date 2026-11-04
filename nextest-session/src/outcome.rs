@@ -48,18 +48,12 @@ pub enum RunFailure {
     SetupScriptFailed,
 
     /// At least one test failed, or the run was cancelled after a failure.
-    TestRunFailed {
-        /// Whether a recording is available to rerun from.
-        rerun_available: bool,
-    },
+    TestRunFailed,
 
     /// A rerun finished without seeing all of the outstanding tests.
     RerunTestsOutstanding {
         /// How many outstanding tests were not seen.
         count: usize,
-
-        /// Whether a recording is available to rerun from.
-        rerun_available: bool,
     },
 }
 
@@ -69,7 +63,7 @@ impl RunFailure {
         match self {
             Self::NoTestsRun { .. } => NextestExitCode::NO_TESTS_RUN,
             Self::SetupScriptFailed => NextestExitCode::SETUP_SCRIPT_FAILED,
-            Self::TestRunFailed { .. } => NextestExitCode::TEST_RUN_FAILED,
+            Self::TestRunFailed => NextestExitCode::TEST_RUN_FAILED,
             Self::RerunTestsOutstanding { .. } => NextestExitCode::RERUN_TESTS_OUTSTANDING,
         }
     }
@@ -79,14 +73,12 @@ impl RunFailure {
 ///
 /// A `no_tests` of `None` behaves as [`NoTestsBehavior::Auto`] but is reported
 /// as the default rather than a choice. `outstanding_not_seen_count` is `Some`
-/// exactly when the run was a rerun; `rerun_available` says whether this run
-/// was recorded, so a failure can point at rerunning it.
+/// exactly when the run was a rerun.
 pub fn final_outcome(
     mode: NextestRunMode,
     outcome: RunOutcome,
     no_tests: Option<NoTestsBehavior>,
     outstanding_not_seen_count: Option<usize>,
-    rerun_available: bool,
 ) -> Result<(), RunFailure> {
     let is_rerun = outstanding_not_seen_count.is_some();
 
@@ -124,7 +116,7 @@ pub fn final_outcome(
         RunOutcome::Cancelled { step } | RunOutcome::Failed { step } => {
             return Err(match step {
                 RunFailureStep::SetupScript => RunFailure::SetupScriptFailed,
-                RunFailureStep::Test => RunFailure::TestRunFailed { rerun_available },
+                RunFailureStep::Test => RunFailure::TestRunFailed,
             });
         }
     }
@@ -134,10 +126,7 @@ pub fn final_outcome(
             info!("no outstanding tests remain");
             Ok(())
         }
-        Some(count) => Err(RunFailure::RerunTestsOutstanding {
-            count,
-            rerun_available,
-        }),
+        Some(count) => Err(RunFailure::RerunTestsOutstanding { count }),
         None => Ok(()),
     }
 }
@@ -173,7 +162,6 @@ mod tests {
             outcome,
             Some(NoTestsBehavior::Pass),
             None,
-            false,
         );
         assert!(result.is_ok(), "no-tests=pass should succeed");
     }
@@ -186,7 +174,6 @@ mod tests {
             outcome,
             Some(NoTestsBehavior::Warn),
             None,
-            false,
         );
         assert!(result.is_ok(), "no-tests=warn should succeed");
     }
@@ -199,7 +186,6 @@ mod tests {
             outcome,
             Some(NoTestsBehavior::Fail),
             None,
-            false,
         );
         assert_eq!(
             result,
@@ -219,7 +205,6 @@ mod tests {
             outcome,
             Some(NoTestsBehavior::Auto),
             None,
-            false,
         );
         assert_eq!(
             result,
@@ -239,14 +224,10 @@ mod tests {
             outcome,
             Some(NoTestsBehavior::Auto),
             Some(5),
-            false,
         );
         assert_eq!(
             result,
-            Err(RunFailure::RerunTestsOutstanding {
-                count: 5,
-                rerun_available: false,
-            }),
+            Err(RunFailure::RerunTestsOutstanding { count: 5 }),
             "no-tests=auto (rerun with outstanding) should report outstanding tests"
         );
 
@@ -256,7 +237,6 @@ mod tests {
             outcome,
             Some(NoTestsBehavior::Auto),
             Some(0),
-            false,
         );
         assert!(
             result.is_ok(),
@@ -267,7 +247,7 @@ mod tests {
     #[test]
     fn the_default_matches_auto_but_reports_as_default() {
         let outcome = make_single_run(0, 0, 0, 0);
-        let result = final_outcome(NextestRunMode::Test, outcome, None, None, false);
+        let result = final_outcome(NextestRunMode::Test, outcome, None, None);
         assert_eq!(
             result,
             Err(RunFailure::NoTestsRun {
@@ -278,13 +258,10 @@ mod tests {
         );
 
         let outcome = make_single_run(0, 0, 0, 0);
-        let result = final_outcome(NextestRunMode::Test, outcome, None, Some(3), false);
+        let result = final_outcome(NextestRunMode::Test, outcome, None, Some(3));
         assert_eq!(
             result,
-            Err(RunFailure::RerunTestsOutstanding {
-                count: 3,
-                rerun_available: false,
-            }),
+            Err(RunFailure::RerunTestsOutstanding { count: 3 }),
             "the default (rerun with outstanding) should report outstanding tests"
         );
     }
@@ -292,10 +269,10 @@ mod tests {
     #[test]
     fn a_passing_run_succeeds() {
         let outcome = make_single_run(5, 5, 5, 0);
-        let result = final_outcome(NextestRunMode::Test, outcome, None, None, false);
+        let result = final_outcome(NextestRunMode::Test, outcome, None, None);
         assert!(result.is_ok(), "all tests passed should succeed");
 
-        let result = final_outcome(NextestRunMode::Test, outcome, None, Some(0), false);
+        let result = final_outcome(NextestRunMode::Test, outcome, None, Some(0));
         assert!(
             result.is_ok(),
             "all tests passed (rerun, no outstanding) should succeed"
@@ -305,55 +282,22 @@ mod tests {
     #[test]
     fn a_passing_rerun_with_outstanding_tests_fails() {
         let outcome = make_single_run(5, 5, 5, 0);
-        let result = final_outcome(NextestRunMode::Test, outcome, None, Some(2), false);
-        assert_eq!(
-            result,
-            Err(RunFailure::RerunTestsOutstanding {
-                count: 2,
-                rerun_available: false,
-            }),
-        );
-
-        let result = final_outcome(NextestRunMode::Test, outcome, None, Some(2), true);
-        assert_eq!(
-            result,
-            Err(RunFailure::RerunTestsOutstanding {
-                count: 2,
-                rerun_available: true,
-            }),
-        );
+        let result = final_outcome(NextestRunMode::Test, outcome, None, Some(2));
+        assert_eq!(result, Err(RunFailure::RerunTestsOutstanding { count: 2 }),);
     }
 
     #[test]
     fn test_failures_fail_the_run() {
         let outcome = make_single_run(5, 5, 3, 2);
-        let result = final_outcome(NextestRunMode::Test, outcome, None, None, false);
-        assert_eq!(
-            result,
-            Err(RunFailure::TestRunFailed {
-                rerun_available: false
-            }),
-        );
-
-        let result = final_outcome(NextestRunMode::Test, outcome, None, None, true);
-        assert_eq!(
-            result,
-            Err(RunFailure::TestRunFailed {
-                rerun_available: true
-            }),
-        );
+        let result = final_outcome(NextestRunMode::Test, outcome, None, None);
+        assert_eq!(result, Err(RunFailure::TestRunFailed),);
     }
 
     #[test]
     fn test_failures_take_precedence_over_outstanding_tests() {
         let outcome = make_single_run(5, 5, 3, 2);
-        let result = final_outcome(NextestRunMode::Test, outcome, None, Some(10), false);
-        assert_eq!(
-            result,
-            Err(RunFailure::TestRunFailed {
-                rerun_available: false
-            }),
-        );
+        let result = final_outcome(NextestRunMode::Test, outcome, None, Some(10));
+        assert_eq!(result, Err(RunFailure::TestRunFailed),);
     }
 
     #[test]
@@ -369,7 +313,7 @@ mod tests {
         ] {
             let outcome = RunOutcome::from_final_stats(final_stats);
             assert_eq!(
-                final_outcome(NextestRunMode::Test, outcome, None, None, false),
+                final_outcome(NextestRunMode::Test, outcome, None, None),
                 Err(RunFailure::SetupScriptFailed),
                 "{final_stats:?} is a setup script failure"
             );
@@ -392,10 +336,8 @@ mod tests {
         ] {
             let outcome = RunOutcome::from_final_stats(final_stats);
             assert_eq!(
-                final_outcome(NextestRunMode::Test, outcome, None, None, true),
-                Err(RunFailure::TestRunFailed {
-                    rerun_available: true
-                }),
+                final_outcome(NextestRunMode::Test, outcome, None, None),
+                Err(RunFailure::TestRunFailed),
                 "{final_stats:?} is a test failure"
             );
         }
@@ -408,11 +350,8 @@ mod tests {
                 },
                 Some(NoTestsBehavior::Pass),
                 None,
-                false,
             ),
-            Err(RunFailure::TestRunFailed {
-                rerun_available: false,
-            }),
+            Err(RunFailure::TestRunFailed),
             "--no-tests=pass doesn't mask a failed run"
         );
     }
@@ -432,18 +371,11 @@ mod tests {
             NextestExitCode::SETUP_SCRIPT_FAILED,
         );
         assert_eq!(
-            RunFailure::TestRunFailed {
-                rerun_available: false
-            }
-            .exit_code(),
+            RunFailure::TestRunFailed.exit_code(),
             NextestExitCode::TEST_RUN_FAILED,
         );
         assert_eq!(
-            RunFailure::RerunTestsOutstanding {
-                count: 1,
-                rerun_available: false,
-            }
-            .exit_code(),
+            RunFailure::RerunTestsOutstanding { count: 1 }.exit_code(),
             NextestExitCode::RERUN_TESTS_OUTSTANDING,
         );
     }

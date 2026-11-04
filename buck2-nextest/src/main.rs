@@ -3,8 +3,7 @@
 
 use buck2_nextest::App;
 use clap::Parser;
-use nextest_session::WriteStr;
-use std::io::{self, Write};
+use std::io::{self, BufWriter};
 use tracing_subscriber::{
     Layer,
     filter::{LevelFilter, Targets},
@@ -46,8 +45,7 @@ fn main() -> std::process::ExitCode {
     let cli_args: Vec<String> = std::env::args().collect();
     let app = App::parse();
 
-    let mut stdout = io::stdout();
-    let mut writer = StdoutWriter(&mut stdout);
+    let mut writer = BufWriter::new(io::stdout());
 
     match app.exec(&mut writer, cli_args) {
         Ok(code) => std::process::ExitCode::from(code as u8),
@@ -56,17 +54,5 @@ fn main() -> std::process::ExitCode {
             eprintln!("{:?}", miette::Report::new(error));
             std::process::ExitCode::from(code as u8)
         }
-    }
-}
-
-struct StdoutWriter<'a>(&'a mut io::Stdout);
-
-impl WriteStr for StdoutWriter<'_> {
-    fn write_str(&mut self, s: &str) -> io::Result<()> {
-        self.0.write_all(s.as_bytes())
-    }
-
-    fn write_str_flush(&mut self) -> io::Result<()> {
-        self.0.flush()
     }
 }

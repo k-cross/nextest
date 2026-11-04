@@ -77,8 +77,6 @@ def _nextest_test_impl(ctx: AnalysisContext) -> list[Provider]:
     common = [
         "--label",
         str(ctx.label.raw_target()),
-        "--package-path",
-        ctx.label.package,
         "--program",
         harness[0],
     ]

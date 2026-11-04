@@ -9,8 +9,8 @@ use nextest_session::{
     NextestExitCode,
     errors::{
         ConfigParseError, ConfigureHandleInheritanceError, CreateTestListError, FromMessagesError,
-        KnownTestsBuildError, ProfileNotFound, StoreDirCreateError, TestFilterBuildError,
-        TestRunnerBuildError, TestRunnerExecuteErrors, WriteEventError,
+        KnownTestsBuildError, ProfileNotFound, TestFilterBuildError, TestRunnerBuildError,
+        TestRunnerExecuteErrors, WriteEventError,
     },
     events::CancelReason,
 };
@@ -127,14 +127,6 @@ pub enum ExpectedError {
         error: TestRunnerBuildError,
     },
 
-    /// Creating the store directory for the profile's reports failed.
-    #[error("failed to create the profile's store directory")]
-    StoreDirCreateError {
-        /// The underlying error.
-        #[source]
-        error: StoreDirCreateError,
-    },
-
     /// The test named with `--test-name` was not in the binary.
     #[error("no test named `{test_name}` in `{label}`")]
     #[diagnostic(help(
@@ -215,7 +207,6 @@ impl ExpectedError {
             | Self::ProfileNotFound { .. }
             | Self::TestFilterBuildError { .. }
             | Self::TestRunnerBuildError { .. }
-            | Self::StoreDirCreateError { .. }
             | Self::ConfigureHandleInheritanceError { .. } => NextestExitCode::SETUP_ERROR,
             Self::FromMessagesError { .. }
             | Self::CreateTestListError { .. }

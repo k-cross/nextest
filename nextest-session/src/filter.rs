@@ -3,6 +3,7 @@
 
 //! Parsing filtersets against a profile's known groups.
 
+use itertools::Itertools;
 use nextest_filtering::{
     Filterset, FiltersetKind, KnownGroups, ParseContext, errors::FiltersetParseErrors,
 };
@@ -18,14 +19,10 @@ pub fn parse_filtersets(
     kind: FiltersetKind,
     known_groups: &KnownGroups,
 ) -> Result<Vec<Filterset>, Vec<FiltersetParseErrors>> {
-    let mut filtersets = Vec::with_capacity(inputs.len());
-    let mut all_errors = Vec::new();
-    for input in inputs {
-        match Filterset::parse(input.clone(), pcx, kind, known_groups) {
-            Ok(filterset) => filtersets.push(filterset),
-            Err(errors) => all_errors.push(errors),
-        }
-    }
+    let (filtersets, all_errors): (Vec<_>, Vec<_>) = inputs
+        .iter()
+        .map(|input| Filterset::parse(input.clone(), pcx, kind, known_groups))
+        .partition_result();
 
     if all_errors.is_empty() {
         Ok(filtersets)

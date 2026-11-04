@@ -48,11 +48,6 @@ struct TargetArgs {
     #[arg(long, value_name = "LABEL")]
     label: String,
 
-    /// The target's package path within the project, empty for the root
-    /// package.
-    #[arg(long, value_name = "PATH", default_value = "")]
-    package_path: String,
-
     /// The test binary to list or run.
     #[arg(long, value_name = "PATH")]
     program: Utf8PathBuf,
@@ -180,7 +175,6 @@ impl TargetArgs {
         let binaries = to_binary_list(
             &TargetInput {
                 label: &self.label,
-                package_path: &self.package_path,
                 program: &self.program,
                 leading_args: &self.args,
                 env: &env,
@@ -306,8 +300,6 @@ mod tests {
             "list",
             "--label",
             "root//app:tests",
-            "--package-path",
-            "app",
             "--program",
             "out/tests",
             "--arg",
@@ -320,26 +312,6 @@ mod tests {
             panic!("expected the list command");
         };
         assert_eq!(args.target.args, vec!["--first", "--second"]);
-        assert_eq!(args.target.package_path, "app");
-    }
-
-    /// The root package's path is empty, and leaving the flag off means the
-    /// same thing as passing it empty.
-    #[test]
-    fn the_package_path_defaults_to_the_root_package() {
-        let app = parse(&[
-            "buck2-nextest",
-            "list",
-            "--label",
-            "root//:demo",
-            "--program",
-            "out/demo",
-        ]);
-
-        let Command::List(args) = app.command else {
-            panic!("expected the list command");
-        };
-        assert_eq!(args.target.package_path, "");
     }
 
     #[test]

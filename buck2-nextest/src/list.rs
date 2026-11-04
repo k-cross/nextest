@@ -10,7 +10,7 @@
 
 use crate::{
     errors::{ExpectedError, Result},
-    output::{ListedTest, ListedTestFilter, display_name, preset_result},
+    output::{ListedTest, ListedTestFilter, display_name, preset_result, write_json_line},
     pipeline::Context,
 };
 use nextest_session::{
@@ -21,7 +21,7 @@ use nextest_session::{
 pub(crate) fn list(cx: &Context, writer: &mut dyn WriteStr) -> Result<()> {
     let config = cx.load_config()?;
     let early_profile = cx.load_profile(&config)?;
-    let profile = cx.evaluate_profile(early_profile)?;
+    let profile = cx.evaluate_profile(early_profile);
     let ctx = cx.session_context();
 
     let filter = TestFilter::new(
@@ -48,7 +48,7 @@ pub(crate) fn list(cx: &Context, writer: &mut dyn WriteStr) -> Result<()> {
                 kind,
                 ignored: test.test_info.ignored,
             };
-            let (status, message) = preset_result(&filter);
+            let (status, message) = preset_result(&filter).unzip();
             Ok(ListedTest {
                 name: display_name(&cx.label, test.name),
                 filter: serde_json::to_string(&filter)
@@ -59,12 +59,5 @@ pub(crate) fn list(cx: &Context, writer: &mut dyn WriteStr) -> Result<()> {
         })
         .collect::<Result<Vec<_>>>()?;
 
-    let json = serde_json::to_string(&listed)
-        .map_err(|error| ExpectedError::ResultSerializeError { error })?;
-
-    writer
-        .write_str(&json)
-        .and_then(|()| writer.write_str("\n"))
-        .and_then(|()| writer.write_str_flush())
-        .map_err(|error| ExpectedError::WriteEventError { error })
+    write_json_line(writer, &listed)
 }

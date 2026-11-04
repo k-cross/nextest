@@ -16,16 +16,17 @@ use crate::{
     errors::{ExpectedError, Result},
     output::{
         BuckTestStatus, ListedTestFilter, TestResult, result_from_finished, result_from_skipped,
+        write_json_line,
     },
-    pipeline::{Context, PlainStderrWriter},
+    pipeline::Context,
 };
 use nextest_session::{
     FilterBound, InputHandlerKind, NextestExitCode, NextestRunMode, Reporter, ReporterBuilder,
     ReporterEvent, ReporterOutput, RunIgnored, ShowTerminalProgress, SignalHandlerKind,
     StructuredReporter, TestFilter, TestFilterPatterns, TestRunnerBuilder, WriteStr,
-    errors::ExecuteError, events::TestEventKind, into_report_errors, run_to_completion,
+    errors::ExecuteError, events::TestEventKind, run_to_completion,
 };
-use std::convert::Infallible;
+use std::io::{self, BufWriter};
 
 /// The test a run is about.
 #[derive(Debug)]
@@ -56,7 +57,7 @@ pub(crate) fn run_one(
 ) -> Result<i32> {
     let config = cx.load_config()?;
     let early_profile = cx.load_profile(&config)?;
-    let profile = cx.evaluate_profile(early_profile)?;
+    let profile = cx.evaluate_profile(early_profile);
     let ctx = cx.session_context();
     let test_name = selection.test_name();
 
@@ -91,7 +92,7 @@ pub(crate) fn run_one(
         )
         .map_err(|error| ExpectedError::TestRunnerBuildError { error })?;
 
-    let mut plain_stderr = PlainStderrWriter::new();
+    let mut plain_stderr = BufWriter::new(io::stderr());
     let reporter: Reporter<'_> = ReporterBuilder::default().build(
         session.test_list(),
         &profile,
@@ -106,15 +107,12 @@ pub(crate) fn run_one(
     let mut result: Option<TestResult> = None;
     let executed = run_to_completion(runner, reporter, false, |event| {
         capture(&cx.label, test_name, event, &mut result);
-        Ok::<(), Infallible>(())
     })
-    .map_err(|error: ExecuteError<Infallible>| match error {
+    .map_err(|error| match error {
         ExecuteError::ConfigureHandleInheritance(error) => {
             ExpectedError::ConfigureHandleInheritanceError { error }
         }
-        ExecuteError::Execute(errors) => ExpectedError::TestRunExecuteError {
-            error: into_report_errors(errors),
-        },
+        ExecuteError::Execute(error) => ExpectedError::TestRunExecuteError { error },
     })?;
 
     let Some(result) = result else {
@@ -132,13 +130,7 @@ pub(crate) fn run_one(
     };
 
     let status = result.status;
-    let json = serde_json::to_string(&[result])
-        .map_err(|error| ExpectedError::ResultSerializeError { error })?;
-    writer
-        .write_str(&json)
-        .and_then(|()| writer.write_str("\n"))
-        .and_then(|()| writer.write_str_flush())
-        .map_err(|error| ExpectedError::WriteEventError { error })?;
+    write_json_line(writer, &[result])?;
 
     Ok(match status {
         BuckTestStatus::Pass | BuckTestStatus::Skip => 0,

@@ -5,7 +5,7 @@
 
 use crate::{
     context::SessionContext,
-    errors::{ExecuteError, KnownTestsBuildError, SessionBuildError, SinkError},
+    errors::{ExecuteError, KnownTestsBuildError, SessionBuildError},
     input::{KnownTestListOptions, SessionInputs, TestListOptions},
 };
 use camino::Utf8PathBuf;
@@ -25,10 +25,7 @@ use nextest_runner::{
     signal::SignalHandlerKind,
     test_filter::TestFilter,
 };
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    fmt,
-};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// A test list built from a build system's inputs, ready to write out or run.
 ///
@@ -105,7 +102,8 @@ impl<'a> TestSession<'a> {
             .cloned()
             .collect();
 
-        let prepared = PreparedInputs::new(inputs, options.platform_filter)?;
+        let prepared = PreparedInputs::new(inputs, options.platform_filter)
+            .map_err(SessionBuildError::from)?;
 
         let mut missing = Vec::new();
         let mut artifacts = Vec::with_capacity(prepared.artifacts.len());
@@ -131,7 +129,8 @@ impl<'a> TestSession<'a> {
             prepared.env,
             profile,
             options.filter_bound,
-        )?;
+        )
+        .map_err(SessionBuildError::from)?;
 
         Ok(Self {
             ctx,
@@ -237,33 +236,22 @@ impl ExecutedRun {
     }
 }
 
-/// Runs the tests to completion, feeding every event through `sink` and then
+/// Runs the tests to completion, showing every event to `observer` and then
 /// the reporter.
-///
-/// The sink goes first: if delivery has failed there is no point rendering an
-/// event nobody will see, and returning its error is what starts a graceful
-/// cancellation -- nextest keeps reporting until the tests it has already
-/// started finish. A frontend with no sink passes `|_| Ok::<(), Infallible>(())`
-/// and recovers the reporter's own error type with
-/// [`into_report_errors`](crate::into_report_errors).
 ///
 /// Consumes the reporter and calls its `finish`, so a frontend cannot forget
 /// to.
-pub fn run_to_completion<'a, E, F>(
+pub fn run_to_completion<'a>(
     runner: TestRunner<'a>,
     mut reporter: Reporter<'a>,
     no_capture: bool,
-    mut sink: F,
-) -> Result<ExecutedRun, ExecuteError<E>>
-where
-    F: FnMut(&ReporterEvent<'a>) -> Result<(), E> + Send,
-    E: fmt::Debug + Send,
-{
+    mut observer: impl FnMut(&ReporterEvent<'a>) + Send,
+) -> Result<ExecutedRun, ExecuteError> {
     configure_handle_inheritance(no_capture).map_err(ExecuteError::ConfigureHandleInheritance)?;
     let outcome = runner
         .try_execute(|event| {
-            sink(&event).map_err(SinkError::Sink)?;
-            reporter.report_event(event).map_err(SinkError::Report)
+            observer(&event);
+            reporter.report_event(event)
         })
         .map_err(ExecuteError::Execute)?;
     let reporter_stats = reporter.finish();
@@ -322,19 +310,12 @@ mod tests {
                 BuildPlatforms::new_with_no_target().expect("the host platform is detected");
 
             let mut packages = IdOrdMap::new();
-            packages.insert_overwrite(PackageInfo {
-                id: PackageId::new(PACKAGE_ID),
-                name: "package".to_owned(),
-                version: Version::new(0, 0, 0),
-                authors: Vec::new(),
-                description: None,
-                homepage: None,
-                license: None,
-                license_file: None,
-                repository: None,
-                minimum_rust_version: None,
-                manifest_path: dir.path().join("BUCK"),
-            });
+            packages.insert_overwrite(PackageInfo::new(
+                PackageId::new(PACKAGE_ID),
+                "package".to_owned(),
+                Version::new(0, 0, 0),
+                dir.path().to_owned(),
+            ));
 
             let filter = TestFilter::new(
                 NextestRunMode::Test,

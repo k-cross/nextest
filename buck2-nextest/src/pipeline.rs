@@ -19,12 +19,12 @@ use nextest_session::{
     ConfigExperimental, EarlyProfile, EnvironmentMap, EvaluatableProfile, FilterBound,
     KnownTestListOptions, ListProgressOptions, NextestConfig, ParseContext, PathMapper,
     SessionContext, SessionInputs, ShowProgress, ShowTerminalProgress, TestFilter, TestListOptions,
-    TestSession, ThemeCharacters, UnfilteredTestCase, WriteStr,
+    TestSession, ThemeCharacters, UnfilteredTestCase,
     errors::{KnownTestsBuildError, SessionBuildError},
-    evaluate_profile, force_or_new_run_id,
+    force_or_new_run_id,
 };
 use semver::Version;
-use std::io::{self, IsTerminal, Write};
+use std::io::{self, IsTerminal};
 
 /// Everything both modes need to reach the pipeline.
 #[derive(Debug)]
@@ -78,12 +78,9 @@ impl Context {
     pub(crate) fn evaluate_profile<'cfg>(
         &self,
         early_profile: EarlyProfile<'cfg>,
-    ) -> Result<EvaluatableProfile<'cfg>> {
-        evaluate_profile(
-            early_profile,
-            &self.binaries.binary_list.rust_build_meta.build_platforms,
-        )
-        .map_err(|error| ExpectedError::StoreDirCreateError { error })
+    ) -> EvaluatableProfile<'cfg> {
+        early_profile
+            .apply_build_platforms(&self.binaries.binary_list.rust_build_meta.build_platforms)
     }
 
     /// Builds the context a session runs under.
@@ -126,12 +123,7 @@ impl Context {
                 ),
             },
         )
-        .map_err(|error| match error {
-            SessionBuildError::FromMessages(error) => ExpectedError::FromMessagesError { error },
-            SessionBuildError::CreateTestList(error) => {
-                ExpectedError::CreateTestListError { error }
-            }
-        })
+        .map_err(session_build_error)
     }
 
     /// Produces a session for `test_case` without listing the binary.
@@ -164,10 +156,7 @@ impl Context {
             },
         )
         .map_err(|error| match error {
-            KnownTestsBuildError::FromMessages(error) => ExpectedError::FromMessagesError { error },
-            KnownTestsBuildError::CreateTestList(error) => {
-                ExpectedError::CreateTestListError { error }
-            }
+            KnownTestsBuildError::Session(error) => session_build_error(error),
             error @ KnownTestsBuildError::BinaryMismatch { .. } => {
                 ExpectedError::KnownTestsMismatch { error }
             }
@@ -185,25 +174,9 @@ impl Context {
     }
 }
 
-/// Writes the displayer's output to standard error, without any cursor control.
-///
-/// Buck2 captures each action's standard error and shows it alongside the
-/// result, so this is the detail view for a test -- which is why it is written
-/// without a progress bar or any other cursor control.
-pub(crate) struct PlainStderrWriter(io::Stderr);
-
-impl PlainStderrWriter {
-    pub(crate) fn new() -> Self {
-        Self(io::stderr())
-    }
-}
-
-impl WriteStr for PlainStderrWriter {
-    fn write_str(&mut self, s: &str) -> io::Result<()> {
-        self.0.write_all(s.as_bytes())
-    }
-
-    fn write_str_flush(&mut self) -> io::Result<()> {
-        self.0.flush()
+fn session_build_error(error: SessionBuildError) -> ExpectedError {
+    match error {
+        SessionBuildError::FromMessages(error) => ExpectedError::FromMessagesError { error },
+        SessionBuildError::CreateTestList(error) => ExpectedError::CreateTestListError { error },
     }
 }

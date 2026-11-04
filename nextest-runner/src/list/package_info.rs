@@ -13,8 +13,7 @@
 //! package graph, so this type is the seam: it carries exactly the fields the
 //! list and run phases consume, and nothing more.
 
-use crate::list::BinaryList;
-use camino::{Utf8Path, Utf8PathBuf};
+use camino::Utf8PathBuf;
 use guppy::{
     PackageId,
     graph::{PackageGraph, PackageMetadata},
@@ -26,7 +25,7 @@ use std::collections::BTreeSet;
 /// Information about the package a test binary belongs to.
 ///
 /// Cargo-based callers derive this from a package graph. Build systems without
-/// one construct it directly.
+/// one construct it with [`Self::new`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PackageInfo {
     /// This is the package ID from `cargo metadata`. It is used to
@@ -51,11 +50,30 @@ pub struct PackageInfo {
     pub repository: Option<String>,
     /// The minimum supported Rust version (`CARGO_PKG_RUST_VERSION`).
     pub minimum_rust_version: Option<Version>,
-    /// The path to the package's manifest.
-    pub manifest_path: Utf8PathBuf,
+    /// The directory containing the package's manifest.
+    ///
+    /// Tests run in this directory, and see it as `CARGO_MANIFEST_DIR`.
+    pub manifest_dir: Utf8PathBuf,
 }
 
 impl PackageInfo {
+    /// Creates a `PackageInfo` with none of the optional metadata set.
+    pub fn new(id: PackageId, name: String, version: Version, manifest_dir: Utf8PathBuf) -> Self {
+        Self {
+            id,
+            name,
+            version,
+            authors: Vec::new(),
+            description: None,
+            homepage: None,
+            license: None,
+            license_file: None,
+            repository: None,
+            minimum_rust_version: None,
+            manifest_dir,
+        }
+    }
+
     /// Creates a `PackageInfo` from Cargo package metadata.
     pub fn from_package_metadata(package: &PackageMetadata<'_>) -> Self {
         Self {
@@ -69,48 +87,40 @@ impl PackageInfo {
             license_file: package.license_file().map(ToOwned::to_owned),
             repository: package.repository().map(ToOwned::to_owned),
             minimum_rust_version: package.rust_version().cloned(),
-            manifest_path: package.manifest_path().to_owned(),
+            manifest_dir: package
+                .manifest_path()
+                .parent()
+                .unwrap_or_else(|| {
+                    panic!(
+                        "manifest path {} doesn't have a parent",
+                        package.manifest_path()
+                    )
+                })
+                .to_owned(),
         }
     }
 
-    /// Builds a map of `PackageInfo` for every package in a Cargo package graph.
+    /// Builds a map of `PackageInfo` for the given package IDs.
     ///
     /// This is the bridge Cargo-based callers use to satisfy
-    /// [`RustTestArtifact::from_binary_list`](crate::list::RustTestArtifact::from_binary_list).
-    pub fn map_from_graph(graph: &PackageGraph) -> IdOrdMap<Self> {
-        graph
-            .packages()
-            .map(|package| Self::from_package_metadata(&package))
-            .collect()
-    }
-
-    /// Builds a map of `PackageInfo` for the packages a binary list refers to.
-    ///
-    /// [`RustTestArtifact::from_binary_list`](crate::list::RustTestArtifact::from_binary_list)
-    /// only looks up the packages its binaries belong to, so this is what
-    /// Cargo-based callers want in preference to [`Self::map_from_graph`]:
-    /// a workspace's test binaries typically name a small fraction of the
-    /// packages in its graph.
+    /// [`RustTestArtifact::from_binary_list`](crate::list::RustTestArtifact::from_binary_list),
+    /// which only looks up the packages its binaries belong to: a workspace's
+    /// test binaries typically name a small fraction of the packages in its
+    /// graph.
     ///
     /// A package ID that is not in the graph is left out, and reported by
     /// `from_binary_list` against the binary that named it.
-    pub fn map_from_binary_list(graph: &PackageGraph, binary_list: &BinaryList) -> IdOrdMap<Self> {
-        binary_list
-            .rust_binaries
-            .iter()
-            .map(|binary| binary.package_id.as_str())
+    pub fn map_from_package_ids<'a>(
+        graph: &PackageGraph,
+        package_ids: impl IntoIterator<Item = &'a str>,
+    ) -> IdOrdMap<Self> {
+        package_ids
+            .into_iter()
             .collect::<BTreeSet<_>>()
             .into_iter()
             .filter_map(|id| graph.metadata(&PackageId::new(id)).ok())
             .map(|package| Self::from_package_metadata(&package))
             .collect()
-    }
-
-    /// This is the directory containing the manifest.
-    pub fn cwd(&self) -> &Utf8Path {
-        self.manifest_path
-            .parent()
-            .unwrap_or_else(|| panic!("manifest path {} doesn't have a parent", self.manifest_path))
     }
 }
 
@@ -127,15 +137,7 @@ impl IdOrdItem for PackageInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        cargo_config::TargetTriple,
-        list::{
-            BinaryListState, RustBuildMeta, RustTestBinary, TestBinaryInvocation,
-            test_helpers::{PACKAGE_GRAPH_FIXTURE, PACKAGE_METADATA_ID},
-        },
-        platform::{BuildPlatforms, HostPlatform, PlatformLibdir},
-    };
-    use nextest_metadata::{BuildPlatform, RustBinaryId, RustTestBinaryKind};
+    use crate::list::test_helpers::{PACKAGE_GRAPH_FIXTURE, PACKAGE_METADATA_ID};
 
     /// Every field must be carried over from the graph. The `CARGO_PKG_*`
     /// environment variables tests observe are derived from these, so a
@@ -180,70 +182,20 @@ mod tests {
                 "minimum rust version matches"
             );
             assert_eq!(
-                info.manifest_path,
-                package.manifest_path(),
-                "manifest path matches"
+                Some(info.manifest_dir.as_path()),
+                package.manifest_path().parent(),
+                "manifest directory matches"
             );
-        }
-    }
-
-    /// `from_binary_list` looks packages up by ID, so the map must cover every
-    /// package a test binary could belong to, not just workspace members.
-    #[test]
-    fn map_from_graph_covers_every_package() {
-        let map = PackageInfo::map_from_graph(&PACKAGE_GRAPH_FIXTURE);
-
-        assert_eq!(
-            map.len(),
-            PACKAGE_GRAPH_FIXTURE.package_count(),
-            "map has an entry per package"
-        );
-        for package in PACKAGE_GRAPH_FIXTURE.packages() {
-            assert!(
-                map.get(package.id()).is_some(),
-                "package {} is present in the map",
-                package.id()
-            );
-        }
-    }
-
-    fn binary_list_naming(package_ids: &[&str]) -> BinaryList {
-        let build_platforms = BuildPlatforms {
-            host: HostPlatform {
-                platform: TargetTriple::x86_64_unknown_linux_gnu().platform,
-                libdir: PlatformLibdir::Available("/fake/libdir".into()),
-            },
-            target: None,
-        };
-        BinaryList {
-            rust_build_meta: RustBuildMeta::<BinaryListState>::new(
-                "/fake",
-                "/fake",
-                build_platforms,
-            ),
-            rust_binaries: package_ids
-                .iter()
-                .enumerate()
-                .map(|(index, package_id)| RustTestBinary {
-                    id: RustBinaryId::new(&format!("binary-{index}")),
-                    path: format!("/fake/binary-{index}").into(),
-                    package_id: (*package_id).to_owned(),
-                    kind: RustTestBinaryKind::LIB,
-                    name: format!("binary-{index}"),
-                    build_platform: BuildPlatform::Target,
-                    invocation: TestBinaryInvocation::empty(),
-                })
-                .collect(),
         }
     }
 
     /// The map must cover exactly the packages the binaries name, however many
     /// binaries share one, and must not carry the rest of the graph along.
     #[test]
-    fn map_from_binary_list_covers_named_packages_only() {
-        let map = PackageInfo::map_from_binary_list(
+    fn map_from_package_ids_covers_named_packages_only() {
+        let map = PackageInfo::map_from_package_ids(
             &PACKAGE_GRAPH_FIXTURE,
-            &binary_list_naming(&[PACKAGE_METADATA_ID, PACKAGE_METADATA_ID]),
+            [PACKAGE_METADATA_ID, PACKAGE_METADATA_ID],
         );
 
         assert_eq!(map.len(), 1, "the shared package is present once");
@@ -260,28 +212,12 @@ mod tests {
     /// A package ID the graph does not know is reported by `from_binary_list`
     /// against the binary that named it, so building the map must not fail.
     #[test]
-    fn map_from_binary_list_skips_unknown_packages() {
-        let map = PackageInfo::map_from_binary_list(
+    fn map_from_package_ids_skips_unknown_packages() {
+        let map = PackageInfo::map_from_package_ids(
             &PACKAGE_GRAPH_FIXTURE,
-            &binary_list_naming(&["not-a-real-package 1.0.0 (path+file:///nowhere)"]),
+            ["not-a-real-package 1.0.0 (path+file:///nowhere)"],
         );
 
         assert!(map.is_empty(), "the unknown package is left out");
-    }
-
-    /// Tests run in the directory containing the manifest.
-    #[test]
-    fn cwd_is_the_manifest_directory() {
-        for package in PACKAGE_GRAPH_FIXTURE.packages() {
-            let info = PackageInfo::from_package_metadata(&package);
-            assert_eq!(
-                info.cwd(),
-                package
-                    .manifest_path()
-                    .parent()
-                    .expect("manifest path has a parent"),
-                "cwd is the manifest directory"
-            );
-        }
     }
 }

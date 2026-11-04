@@ -39,10 +39,10 @@ hands them over; it does not implement an interface for nextest to call.
   reporter output speak in labels.
 * `PackageInfo`, one per package named by a binary's `package_id`. A build
   system without Cargo's package vocabulary synthesizes these: `buck2-nextest`
-  derives them from Buck2 labels, with the `BUCK` file standing in for the
-  manifest and a `0.0.0` version.
+  derives them from Buck2 labels, with a `0.0.0` version and the directory
+  Buck2 ran the action in as the manifest directory, which is where tests run.
 * `TestBinaryInvocation`, per binary, for launchers that need extra leading
-  arguments, environment variables, or a working directory. Cargo-built
+  arguments or environment variables. Cargo-built
   binaries need none of this; Buck2-built binaries often do. This is
   deliberately *not* serialized into binary-list metadata, so archives do not
   round-trip it.
@@ -58,8 +58,8 @@ In order:
    `ParseContext::without_graph` exists for integrations with no Cargo package
    graph; it disables the package-graph filterset predicates (`package()`,
    `deps()`, `rdeps()`) and nothing else.
-2. `evaluate_profile` turns an `EarlyProfile` into an `EvaluatableProfile`,
-   creating the profile's store directory if it writes a JUnit report.
+2. `EarlyProfile::apply_build_platforms` turns the profile into an
+   `EvaluatableProfile`.
 3. `parse_filtersets` compiles filterset inputs against the profile's known
    test groups, reporting every bad one at once.
 4. `TestSession::build` executes the binaries to enumerate their tests,
@@ -76,16 +76,14 @@ In order:
    every build system.
 6. `final_outcome` maps the finished run to the canonical exit-code policy.
 
-## The sink, and who owns the terminal
+## The observer, and who owns the terminal
 
-`run_to_completion` takes a *sink*: a callback that sees every reporter event
-before the reporter renders it. This is how a build system that renders
+`run_to_completion` takes an *observer*: a callback that sees every reporter
+event before the reporter renders it. This is how a build system that renders
 results itself consumes them — `buck2-nextest` collects the one test's outcome
 from the events and writes it as the JSON Buck2 parses, while nextest's own
-reporter writes plainly to standard error as a detail view. If the sink returns an error, the run is cancelled gracefully:
-nextest keeps reporting until the tests it has already started finish. A
-frontend with no sink passes an infallible closure and recovers the reporter's
-own error type with `into_report_errors`.
+reporter writes plainly to standard error as a detail view. A frontend with
+nothing to observe passes `|_| {}`.
 
 Reporter construction stays with the frontend, and this is a hard rule rather
 than a convenience: `ReporterOutput::Writer` borrows its writer and is

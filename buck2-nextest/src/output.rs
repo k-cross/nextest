@@ -23,8 +23,10 @@
 //! the run mode can select, and the `name` reported for a result must be
 //! the `name` the listing gave, or Buck2 cannot match them up.
 
+use crate::errors::{ExpectedError, Result};
 use nextest_session::{
-    LiveSpec, MismatchReason, RustTestKind, TestCaseName, TestInstanceId, UnfilteredTestCase,
+    ChildSingleOutput, LiveSpec, MismatchReason, RustTestKind, TestCaseName, TestInstanceId,
+    UnfilteredTestCase, WriteStr,
     events::{
         ChildExecutionOutputDescription, ChildOutputDescription, ExecuteStatus,
         ExecutionDescription, ExecutionResultDescription, ExecutionStatuses,
@@ -59,15 +61,10 @@ pub(crate) struct ListedTest {
 /// An ignored test is the only one that has one, and the message matches what
 /// [`result_from_skipped`] reports for it, since the two describe the same
 /// test to the same UI.
-pub(crate) fn preset_result(filter: &ListedTestFilter) -> (Option<BuckTestStatus>, Option<String>) {
-    if filter.ignored {
-        (
-            Some(BuckTestStatus::Skip),
-            Some(MismatchReason::Ignored.to_string()),
-        )
-    } else {
-        (None, None)
-    }
+pub(crate) fn preset_result(filter: &ListedTestFilter) -> Option<(BuckTestStatus, String)> {
+    filter
+        .ignored
+        .then(|| (BuckTestStatus::Skip, MismatchReason::Ignored.to_string()))
 }
 
 /// What the run mode needs to know about a listed test.
@@ -305,19 +302,11 @@ fn details_for(status: &ExecuteStatus<LiveSpec>) -> Option<String> {
     match &status.output {
         ChildExecutionOutputDescription::Output { output, .. } => match output {
             ChildOutputDescription::Split { stdout, stderr } => {
-                append_section(
-                    &mut buf,
-                    "stdout",
-                    stdout.as_ref().map(|out| &out.buf()[..]),
-                );
-                append_section(
-                    &mut buf,
-                    "stderr",
-                    stderr.as_ref().map(|out| &out.buf()[..]),
-                );
+                append_section(&mut buf, "stdout", stdout.as_ref());
+                append_section(&mut buf, "stderr", stderr.as_ref());
             }
             ChildOutputDescription::Combined { output } => {
-                append_section(&mut buf, "output", Some(&output.buf()[..]));
+                append_section(&mut buf, "output", Some(output));
             }
             ChildOutputDescription::NotLoaded => {}
         },
@@ -334,13 +323,24 @@ fn details_for(status: &ExecuteStatus<LiveSpec>) -> Option<String> {
 /// Test output is whatever the test wrote, so it is not necessarily UTF-8;
 /// Buck2's callback takes a string, so it is transcoded lossily rather than
 /// dropped.
-fn append_section(buf: &mut String, name: &str, bytes: Option<&[u8]>) {
-    let Some(bytes) = bytes else { return };
-    if bytes.is_empty() {
+fn append_section(buf: &mut String, name: &str, output: Option<&ChildSingleOutput>) {
+    let Some(output) = output.filter(|output| !output.is_empty()) else {
         return;
-    }
-    swrite!(buf, "--- {name} ---\n{}", String::from_utf8_lossy(bytes));
-    if !bytes.ends_with(b"\n") {
+    };
+    let text = output.as_str_lossy();
+    swrite!(buf, "--- {name} ---\n{text}");
+    if !text.ends_with('\n') {
         buf.push('\n');
     }
+}
+
+/// Writes `value` as one line of JSON and flushes it.
+pub(crate) fn write_json_line(writer: &mut dyn WriteStr, value: &impl Serialize) -> Result<()> {
+    let json = serde_json::to_string(value)
+        .map_err(|error| ExpectedError::ResultSerializeError { error })?;
+    writer
+        .write_str(&json)
+        .and_then(|()| writer.write_str("\n"))
+        .and_then(|()| writer.write_str_flush())
+        .map_err(|error| ExpectedError::WriteEventError { error })
 }
