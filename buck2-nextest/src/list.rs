@@ -10,7 +10,7 @@
 
 use crate::{
     errors::{ExpectedError, Result},
-    output::{ListedTest, ListedTestFilter, display_name, preset_result},
+    output::{ListedTest, ListedTestFilter, display_name, preset_result, write_json_line},
     pipeline::Context,
 };
 use nextest_session::{
@@ -59,12 +59,5 @@ pub(crate) fn list(cx: &Context, writer: &mut dyn WriteStr) -> Result<()> {
         })
         .collect::<Result<Vec<_>>>()?;
 
-    let json = serde_json::to_string(&listed)
-        .map_err(|error| ExpectedError::ResultSerializeError { error })?;
-
-    writer
-        .write_str(&json)
-        .and_then(|()| writer.write_str("\n"))
-        .and_then(|()| writer.write_str_flush())
-        .map_err(|error| ExpectedError::WriteEventError { error })
+    write_json_line(writer, &listed)
 }

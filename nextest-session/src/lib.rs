@@ -80,19 +80,12 @@
 //! // have an entry in `packages`.
 //! let package_id = "my-build//:my-test".to_owned();
 //! let mut packages = IdOrdMap::new();
-//! packages.insert_overwrite(PackageInfo {
-//!     id: PackageId::new(package_id.clone()),
-//!     name: "my-test".to_owned(),
-//!     version: Version::new(0, 0, 0),
-//!     authors: Vec::new(),
-//!     description: None,
-//!     homepage: None,
-//!     license: None,
-//!     license_file: None,
-//!     repository: None,
-//!     minimum_rust_version: None,
-//!     manifest_path: project_root.join("BUILD"),
-//! });
+//! packages.insert_overwrite(PackageInfo::new(
+//!     PackageId::new(package_id.clone()),
+//!     "my-test".to_owned(),
+//!     Version::new(0, 0, 0),
+//!     project_root.join("BUILD"),
+//! ));
 //! let build_platforms = BuildPlatforms::new_with_no_target()?;
 //! let binary_list = Arc::new(BinaryList {
 //!     rust_build_meta: RustBuildMeta::new(&project_root, &project_root, build_platforms),
@@ -174,7 +167,6 @@
 //!     executed.outcome,
 //!     Some(NoTestsBehavior::Fail),
 //!     None,
-//!     false,
 //! ) {
 //!     Ok(()) => Ok(()),
 //!     Err(failure) => std::process::exit(failure.exit_code()),

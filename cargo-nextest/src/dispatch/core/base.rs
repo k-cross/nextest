@@ -50,8 +50,6 @@ pub(crate) struct BaseApp {
     pub(crate) build_platforms: BuildPlatforms,
     pub(crate) cargo_metadata_json: Arc<String>,
     package_graph: Arc<PackageGraph>,
-    // Computed on first access, for the binary list passed in then.
-    packages: OnceLock<IdOrdMap<PackageInfo>>,
     // Potentially remapped workspace root (might not be the same as the graph).
     pub(crate) workspace_root: Utf8PathBuf,
     config_paths: ConfigPaths,
@@ -174,7 +172,6 @@ impl BaseApp {
             cargo_configs,
             current_version,
 
-            packages: OnceLock::new(),
             double_spawn: OnceLock::new(),
             target_runner: OnceLock::new(),
         })
@@ -467,9 +464,8 @@ impl BaseApp {
     ///
     /// `nextest-runner`'s list and run phases take this rather than the graph
     /// itself, so that non-Cargo orchestrators can supply their own.
-    pub(crate) fn packages(&self, binary_list: &BinaryList) -> &IdOrdMap<PackageInfo> {
-        self.packages
-            .get_or_init(|| PackageInfo::map_from_binary_list(&self.package_graph, binary_list))
+    pub(crate) fn packages(&self, binary_list: &BinaryList) -> IdOrdMap<PackageInfo> {
+        PackageInfo::map_from_binary_list(&self.package_graph, binary_list)
     }
 
     pub(crate) fn load_profile<'cfg>(

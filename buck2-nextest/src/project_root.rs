@@ -25,9 +25,7 @@ const BUCKROOT_FILE: &str = ".buckroot";
 const BUCKCONFIG_FILE: &str = ".buckconfig";
 
 /// How strongly a directory claims to be the Buck2 project root.
-///
-/// Ordered weakest to strongest, so that two candidates can be compared.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RootMarker {
     /// Nothing marks this directory.
     None,
@@ -132,7 +130,7 @@ mod tests {
     }
 
     #[test]
-    fn markers_are_ranked_by_how_much_they_say() {
+    fn each_marker_is_recognized() {
         let temp = Utf8TempDir::new().expect("a temporary directory");
         let unmarked = temp.path().join("unmarked");
         let cell = temp.path().join("cell");
@@ -145,8 +143,6 @@ mod tests {
         assert_eq!(root_marker(&unmarked), RootMarker::None);
         assert_eq!(root_marker(&cell), RootMarker::Cell);
         assert_eq!(root_marker(&project), RootMarker::Project);
-        assert!(RootMarker::Project > RootMarker::Cell);
-        assert!(RootMarker::Cell > RootMarker::None);
     }
 
     /// A `.buckroot` names the project outright, even with a cell between it

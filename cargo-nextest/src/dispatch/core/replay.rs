@@ -244,7 +244,13 @@ fn run_replay_common(
         .read_record_opts()
         .map_err(|err| ExpectedError::RecordReadError { err })?;
 
-    let packages = PackageInfo::map_from_graph(&graph);
+    let packages = PackageInfo::map_from_package_ids(
+        &graph,
+        test_list_summary
+            .rust_suites
+            .values()
+            .map(|suite| suite.binary.package_id.as_str()),
+    );
     let workspace_root = graph.workspace().root().to_owned();
     let test_list = TestList::from_summary(
         &packages,

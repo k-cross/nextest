@@ -13,12 +13,13 @@ use super::{
 };
 use crate::{
     ExpectedError, Result,
-    dispatch::helpers::{build_filtersets, evaluate_profile, resolve_user_config},
+    dispatch::helpers::{build_filtersets, resolve_user_config},
     output::OutputWriter,
     reuse_build::ReuseBuildOpts,
 };
 use camino::Utf8Path;
 use clap::{Args, builder::BoolishValueParser};
+use iddqd::IdOrdMap;
 use nextest_filtering::{FiltersetKind, ParseContext};
 use nextest_runner::{
     cargo_config::EnvironmentMap,
@@ -29,7 +30,7 @@ use nextest_runner::{
     errors::DisplayErrorChain,
     helpers::{ShowTerminalProgress, ThemeCharacters, force_or_new_run_id},
     input::InputHandlerKind,
-    list::{BinaryList, ListProgressOptions, TestList},
+    list::{BinaryList, ListProgressOptions, PackageInfo, TestList},
     platform::BuildPlatforms,
     record::{
         ComputedRerunInfo, PortableRecording, RecordOpts, RecordReader, RecordRetentionPolicy,
@@ -901,6 +902,7 @@ impl App {
         &'a self,
         ctx: &'a SessionContext,
         profile: &'a nextest_runner::config::core::EvaluatableProfile<'a>,
+        packages: &'a IdOrdMap<PackageInfo>,
         binary_list: Arc<BinaryList>,
         test_filter: &TestFilter,
         show_progress: ShowProgress,
@@ -910,7 +912,7 @@ impl App {
             ctx,
             profile,
             self.base.graph(),
-            self.base.packages(&binary_list),
+            packages,
             self.base.workspace_root.clone(),
             binary_list,
             test_filter,
@@ -1000,37 +1002,35 @@ impl App {
         // TODO: support message format for benchmarks.
         let message_format = match kind {
             RunKindOpts::Test { reporter_opts, .. } => {
-                reporter_opts.message_format.unwrap_or_default()
+                let message_format = reporter_opts.message_format.unwrap_or_default();
+                match message_format {
+                    MessageFormat::Human => {}
+                    MessageFormat::LibtestJson | MessageFormat::LibtestJsonPlus => {
+                        // This is currently an experimental feature, and is gated on this environment
+                        // variable.
+                        const EXPERIMENTAL_ENV: &str = "NEXTEST_EXPERIMENTAL_LIBTEST_JSON";
+                        if std::env::var(EXPERIMENTAL_ENV).as_deref() != Ok("1") {
+                            return Err(ExpectedError::ExperimentalFeatureNotEnabled {
+                                name: "libtest JSON output",
+                                var_name: EXPERIMENTAL_ENV,
+                            });
+                        }
+
+                        let libtest = structured::LibtestReporter::new(
+                            reporter_opts.message_format_version.as_deref(),
+                            if matches!(message_format, MessageFormat::LibtestJsonPlus) {
+                                structured::EmitNextestObject::Yes
+                            } else {
+                                structured::EmitNextestObject::No
+                            },
+                        )?;
+                        structured_reporter.set_libtest(libtest);
+                    }
+                }
+                message_format
             }
             RunKindOpts::Bench { .. } => MessageFormat::Human,
         };
-
-        if let RunKindOpts::Test { reporter_opts, .. } = kind {
-            match message_format {
-                MessageFormat::Human => {}
-                MessageFormat::LibtestJson | MessageFormat::LibtestJsonPlus => {
-                    // This is currently an experimental feature, and is gated on this environment
-                    // variable.
-                    const EXPERIMENTAL_ENV: &str = "NEXTEST_EXPERIMENTAL_LIBTEST_JSON";
-                    if std::env::var(EXPERIMENTAL_ENV).as_deref() != Ok("1") {
-                        return Err(ExpectedError::ExperimentalFeatureNotEnabled {
-                            name: "libtest JSON output",
-                            var_name: EXPERIMENTAL_ENV,
-                        });
-                    }
-
-                    let libtest = structured::LibtestReporter::new(
-                        reporter_opts.message_format_version.as_deref(),
-                        if matches!(message_format, MessageFormat::LibtestJsonPlus) {
-                            structured::EmitNextestObject::Yes
-                        } else {
-                            structured::EmitNextestObject::No
-                        },
-                    )?;
-                    structured_reporter.set_libtest(libtest);
-                }
-            };
-        }
 
         // Parse test filters and emulated test binary args. This must happen
         // before computing cap_strat, since `-- --nocapture` affects capture.
@@ -1056,21 +1056,16 @@ impl App {
                 no_capture || filter_result.no_capture
             }
             // Benchmarks always run without capture.
+            // TODO: maybe support capture strategy for benchmarks?
             RunKindOpts::Bench { .. } => true,
         };
 
-        let cap_strat = match kind {
-            RunKindOpts::Test { .. } => {
-                if no_capture || kind.interceptor().is_active() {
-                    CaptureStrategy::None
-                } else if matches!(message_format, MessageFormat::Human) {
-                    CaptureStrategy::Split
-                } else {
-                    CaptureStrategy::Combined
-                }
-            }
-            // TODO: maybe support capture strategy for benchmarks?
-            RunKindOpts::Bench { .. } => CaptureStrategy::None,
+        let cap_strat = if no_capture || kind.interceptor().is_active() {
+            CaptureStrategy::None
+        } else if matches!(message_format, MessageFormat::Human) {
+            CaptureStrategy::Split
+        } else {
+            CaptureStrategy::Combined
         };
 
         let should_colorize = self
@@ -1147,12 +1142,14 @@ impl App {
             .build_binary_list_with_scope(cargo_command, build_scope)?;
         let build_platforms = &binary_list.rust_build_meta.build_platforms;
 
-        let profile = evaluate_profile(profile, build_platforms)?;
+        let profile = profile.apply_build_platforms(build_platforms);
         let ctx = self.session_context(&version_only_config, build_platforms);
+        let packages = self.base.packages(&binary_list);
 
         let session = self.build_test_session(
             &ctx,
             &profile,
+            &packages,
             binary_list,
             &test_filter,
             kind.resolved_show_progress(&resolved_user_config.ui),
@@ -1248,22 +1245,13 @@ impl App {
             let build_scope_for_recording =
                 RecordedBuildScope::new(build_kind, build_scope.scope().clone());
 
-            let rerun_info = match kind {
-                RunKindOpts::Test { .. } => {
-                    let outstanding_tests = test_filter.into_rerun_info();
-                    if let Some(outstanding) = outstanding_tests {
-                        let rerun_state =
-                            rerun_state.expect("rerun_state is Some iff outstanding_tests is Some");
-                        Some(
-                            outstanding
-                                .into_rerun_info(rerun_state.parent_run_id, rerun_state.root_info),
-                        )
-                    } else {
-                        None
-                    }
-                }
-                // TODO: support reruns for benchmarks? value seems dubious.
-                RunKindOpts::Bench { .. } => None,
+            let outstanding_tests = test_filter.into_rerun_info();
+            let rerun_info = if let Some(outstanding) = outstanding_tests {
+                let rerun_state =
+                    rerun_state.expect("rerun_state is Some iff outstanding_tests is Some");
+                Some(outstanding.into_rerun_info(rerun_state.parent_run_id, rerun_state.root_info))
+            } else {
+                None
             };
 
             let config = RecordSessionConfig {
@@ -1312,23 +1300,17 @@ impl App {
         let outcome = executed.outcome;
         let reporter_stats = executed.reporter_stats;
 
-        // Benchmarks don't support reruns, so their outstanding count is
-        // always None.
-        let outstanding_not_seen_count = match kind {
-            RunKindOpts::Test { .. } => reporter_stats
-                .run_finished
-                .and_then(|rf| rf.outstanding_not_seen_count),
-            RunKindOpts::Bench { .. } => None,
-        };
+        let outstanding_not_seen_count = reporter_stats
+            .run_finished
+            .and_then(|rf| rf.outstanding_not_seen_count);
         let rerun_available = recording_session.is_some();
         let result = final_outcome(
             mode,
             outcome,
             kind.no_tests().map(NoTestsBehavior::from),
             outstanding_not_seen_count,
-            rerun_available,
         )
-        .map_err(run_failure_to_error);
+        .map_err(|failure| run_failure_to_error(failure, rerun_available));
 
         let exit_code = result.as_ref().err().map_or(0, |e| e.process_exit_code());
 
@@ -1476,6 +1458,7 @@ impl<'a> RunKindOpts<'a> {
     fn rerun(self) -> Option<&'a RunIdOrRecordingSelector> {
         match self {
             Self::Test { rerun, .. } => rerun,
+            // TODO: support reruns for benchmarks? value seems dubious.
             Self::Bench { .. } => None,
         }
     }
@@ -1511,19 +1494,14 @@ impl<'a> RunKindOpts<'a> {
 
 /// Maps a shared [`RunFailure`] onto this crate's error type, which carries
 /// the message and exit code.
-fn run_failure_to_error(failure: RunFailure) -> ExpectedError {
+fn run_failure_to_error(failure: RunFailure, rerun_available: bool) -> ExpectedError {
     match failure {
         RunFailure::NoTestsRun { mode, is_default } => {
             ExpectedError::NoTestsRun { mode, is_default }
         }
         RunFailure::SetupScriptFailed => ExpectedError::setup_script_failed(),
-        RunFailure::TestRunFailed { rerun_available } => {
-            ExpectedError::test_run_failed(rerun_available)
-        }
-        RunFailure::RerunTestsOutstanding {
-            count,
-            rerun_available,
-        } => ExpectedError::RerunTestsOutstanding {
+        RunFailure::TestRunFailed => ExpectedError::test_run_failed(rerun_available),
+        RunFailure::RerunTestsOutstanding { count } => ExpectedError::RerunTestsOutstanding {
             count,
             rerun_available,
         },

@@ -96,19 +96,12 @@ pub(crate) fn to_binary_list(
     };
 
     let mut packages = IdOrdMap::new();
-    packages.insert_overwrite(PackageInfo {
-        id: package_id,
+    packages.insert_overwrite(PackageInfo::new(
+        package_id,
         name,
-        version: Version::new(0, 0, 0),
-        authors: Vec::new(),
-        description: None,
-        homepage: None,
-        license: None,
-        license_file: None,
-        repository: None,
-        minimum_rust_version: None,
-        manifest_path: package_dir.join(BUCK_FILE_NAME),
-    });
+        Version::new(0, 0, 0),
+        package_dir.join(BUCK_FILE_NAME),
+    ));
 
     let rust_build_meta: RustBuildMeta<BinaryListState> =
         RustBuildMeta::new(project_root, project_root, build_platforms);

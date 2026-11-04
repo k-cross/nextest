@@ -105,7 +105,8 @@ impl<'a> TestSession<'a> {
             .cloned()
             .collect();
 
-        let prepared = PreparedInputs::new(inputs, options.platform_filter)?;
+        let prepared = PreparedInputs::new(inputs, options.platform_filter)
+            .map_err(SessionBuildError::from)?;
 
         let mut missing = Vec::new();
         let mut artifacts = Vec::with_capacity(prepared.artifacts.len());
@@ -131,7 +132,8 @@ impl<'a> TestSession<'a> {
             prepared.env,
             profile,
             options.filter_bound,
-        )?;
+        )
+        .map_err(SessionBuildError::from)?;
 
         Ok(Self {
             ctx,
@@ -322,19 +324,12 @@ mod tests {
                 BuildPlatforms::new_with_no_target().expect("the host platform is detected");
 
             let mut packages = IdOrdMap::new();
-            packages.insert_overwrite(PackageInfo {
-                id: PackageId::new(PACKAGE_ID),
-                name: "package".to_owned(),
-                version: Version::new(0, 0, 0),
-                authors: Vec::new(),
-                description: None,
-                homepage: None,
-                license: None,
-                license_file: None,
-                repository: None,
-                minimum_rust_version: None,
-                manifest_path: dir.path().join("BUCK"),
-            });
+            packages.insert_overwrite(PackageInfo::new(
+                PackageId::new(PACKAGE_ID),
+                "package".to_owned(),
+                Version::new(0, 0, 0),
+                dir.path().join("BUCK"),
+            ));
 
             let filter = TestFilter::new(
                 NextestRunMode::Test,

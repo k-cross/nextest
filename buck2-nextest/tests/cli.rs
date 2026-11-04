@@ -12,6 +12,7 @@
 
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::Utf8TempDir;
+use nextest_session::NextestExitCode;
 use serde_json::{Value, json};
 use std::{
     process::{Command, Output},
@@ -363,7 +364,7 @@ fn reports_a_failing_test_with_its_panic_message() {
 
     assert_eq!(string(&result, "name"), "root//app:harness - tests::fails");
     assert_eq!(string(&result, "status"), "FAIL");
-    assert_eq!(code, 100);
+    assert_eq!(code, NextestExitCode::TEST_RUN_FAILED);
     assert!(
         string(&result, "details").contains("the distinctive panic message"),
         "the details carry the test's own output: {result}"
@@ -588,7 +589,7 @@ fn a_flaky_test_fails_without_retries() {
     let (result, code) = fixture.run_test("tests::flaky", &[]);
 
     assert_eq!(string(&result, "status"), "FAIL");
-    assert_eq!(code, 100);
+    assert_eq!(code, NextestExitCode::TEST_RUN_FAILED);
 }
 
 /// A target's environment reaches the test process, which is what lets a Buck2
@@ -614,7 +615,7 @@ fn a_test_needing_target_environment_fails_without_it() {
     let (result, code) = fixture.run_test("tests::reads_target_env", &[]);
 
     assert_eq!(string(&result, "status"), "FAIL");
-    assert_eq!(code, 100);
+    assert_eq!(code, NextestExitCode::TEST_RUN_FAILED);
 }
 
 /// A malformed `--env` is rejected rather than being dropped in silence, which
@@ -656,7 +657,7 @@ fn a_test_outside_the_default_filter_still_runs_when_asked_for() {
 
     let (result, code) = fixture.run_test("tests::fails", &["-P", "narrowed"]);
     assert_eq!(string(&result, "status"), "FAIL");
-    assert_eq!(code, 100);
+    assert_eq!(code, NextestExitCode::TEST_RUN_FAILED);
 }
 
 /// The project root is what nextest reads configuration from, and it is found

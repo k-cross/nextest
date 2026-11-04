@@ -16,8 +16,9 @@ use crate::{
     errors::{ExpectedError, Result},
     output::{
         BuckTestStatus, ListedTestFilter, TestResult, result_from_finished, result_from_skipped,
+        write_json_line,
     },
-    pipeline::{Context, PlainStderrWriter},
+    pipeline::Context,
 };
 use nextest_session::{
     FilterBound, InputHandlerKind, NextestExitCode, NextestRunMode, Reporter, ReporterBuilder,
@@ -25,7 +26,10 @@ use nextest_session::{
     StructuredReporter, TestFilter, TestFilterPatterns, TestRunnerBuilder, WriteStr,
     errors::ExecuteError, events::TestEventKind, into_report_errors, run_to_completion,
 };
-use std::convert::Infallible;
+use std::{
+    convert::Infallible,
+    io::{self, BufWriter},
+};
 
 /// The test a run is about.
 #[derive(Debug)]
@@ -91,7 +95,7 @@ pub(crate) fn run_one(
         )
         .map_err(|error| ExpectedError::TestRunnerBuildError { error })?;
 
-    let mut plain_stderr = PlainStderrWriter::new();
+    let mut plain_stderr = BufWriter::new(io::stderr());
     let reporter: Reporter<'_> = ReporterBuilder::default().build(
         session.test_list(),
         &profile,
@@ -132,13 +136,7 @@ pub(crate) fn run_one(
     };
 
     let status = result.status;
-    let json = serde_json::to_string(&[result])
-        .map_err(|error| ExpectedError::ResultSerializeError { error })?;
-    writer
-        .write_str(&json)
-        .and_then(|()| writer.write_str("\n"))
-        .and_then(|()| writer.write_str_flush())
-        .map_err(|error| ExpectedError::WriteEventError { error })?;
+    write_json_line(writer, &[result])?;
 
     Ok(match status {
         BuckTestStatus::Pass | BuckTestStatus::Skip => 0,

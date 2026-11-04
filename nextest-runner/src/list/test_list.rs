@@ -99,7 +99,7 @@ impl<'g> RustTestArtifact<'g> {
     ///
     /// `packages` must contain an entry for every package ID referenced by
     /// `binary_list`. Cargo-based callers build it from a `PackageGraph` with
-    /// [`PackageInfo::map_from_graph`].
+    /// [`PackageInfo::map_from_binary_list`].
     pub fn from_binary_list(
         packages: &'g IdOrdMap<PackageInfo>,
         binary_list: Arc<BinaryList>,
@@ -388,22 +388,15 @@ impl<'g> TestList<'g> {
             bound,
         );
 
-        let test_count = rust_suites
-            .iter()
-            .map(|suite| suite.status.test_count())
-            .sum();
-
-        Ok(Self {
+        Ok(Self::from_suites(
             rust_suites,
-            mode: filter.mode(),
+            filter.mode(),
             workspace_root,
             env,
             rust_build_meta,
             updated_dylib_path,
             build_dylib_paths,
-            test_count,
-            skip_counts: OnceLock::new(),
-        })
+        ))
     }
 
     /// Creates a new test list from test cases already known to be in each
@@ -462,14 +455,35 @@ impl<'g> TestList<'g> {
             bound,
         );
 
+        Ok(Self::from_suites(
+            rust_suites,
+            filter.mode(),
+            workspace_root,
+            env,
+            rust_build_meta,
+            updated_dylib_path,
+            build_dylib_paths,
+        ))
+    }
+
+    /// Assembles a test list from its filtered suites.
+    fn from_suites(
+        rust_suites: IdOrdMap<RustTestSuite<'g>>,
+        mode: NextestRunMode,
+        workspace_root: Utf8PathBuf,
+        env: EnvironmentMap,
+        rust_build_meta: RustBuildMeta<TestListState>,
+        updated_dylib_path: OsString,
+        build_dylib_paths: Vec<Utf8PathBuf>,
+    ) -> Self {
         let test_count = rust_suites
             .iter()
             .map(|suite| suite.status.test_count())
             .sum();
 
-        Ok(Self {
+        Self {
             rust_suites,
-            mode: filter.mode(),
+            mode,
             workspace_root,
             env,
             rust_build_meta,
@@ -477,7 +491,7 @@ impl<'g> TestList<'g> {
             build_dylib_paths,
             test_count,
             skip_counts: OnceLock::new(),
-        })
+        }
     }
 
     /// Applies test-level filters and partitioning.
@@ -548,22 +562,15 @@ impl<'g> TestList<'g> {
 
         Self::apply_partitioning(&mut rust_suites, partitioner_builder);
 
-        let test_count = rust_suites
-            .iter()
-            .map(|suite| suite.status.test_count())
-            .sum();
-
-        Ok(Self {
+        Ok(Self::from_suites(
             rust_suites,
-            mode: filter.mode(),
+            filter.mode(),
             workspace_root,
             env,
             rust_build_meta,
             updated_dylib_path,
             build_dylib_paths,
-            test_count,
-            skip_counts: OnceLock::new(),
-        })
+        ))
     }
 
     /// Reconstructs a TestList from archived summary data.
@@ -2119,7 +2126,8 @@ mod tests {
         list::{
             RustTestBinary, SerializableFormat,
             test_helpers::{
-                PACKAGE_GRAPH_FIXTURE, PACKAGE_METADATA_ID, package_info, simple_build_meta,
+                PACKAGE_GRAPH_FIXTURE, PACKAGE_METADATA_ID, make_test_artifact, package_info,
+                simple_build_meta,
             },
         },
         platform::{BuildPlatforms, HostPlatform, PlatformLibdir, TargetPlatform},
@@ -2641,13 +2649,7 @@ mod tests {
             Self {
                 _workspace: workspace,
                 config,
-                build_platforms: BuildPlatforms {
-                    host: HostPlatform {
-                        platform: TargetTriple::x86_64_unknown_linux_gnu().platform,
-                        libdir: PlatformLibdir::Available("/fake/libdir".into()),
-                    },
-                    target: None,
-                },
+                build_platforms: simple_build_meta().build_platforms,
             }
         }
 
@@ -2664,21 +2666,9 @@ mod tests {
             build_platform: BuildPlatform,
         ) -> RustTestArtifact<'static> {
             RustTestArtifact {
-                binary_path: format!("/fake/{binary_name}").into(),
-                cwd: "/fake/cwd".into(),
-                package: package_info(),
-                binary_name: binary_name.to_owned(),
-                binary_id: RustBinaryId::new(&format!("fake-package::{binary_name}")),
-                kind: RustTestBinaryKind::LIB,
-                non_test_binaries: BTreeSet::new(),
                 build_platform,
-                invocation: TestBinaryInvocation::empty(),
+                ..make_test_artifact(&format!("fake-package::{binary_name}"))
             }
-        }
-
-        fn build_meta(&self) -> RustBuildMeta<TestListState> {
-            RustBuildMeta::new("/fake", "/fake", self.build_platforms.clone())
-                .map_paths(&PathMapper::noop())
         }
     }
 
@@ -2743,7 +2733,7 @@ mod tests {
                 (setup.artifact("host-only", BuildPlatform::Host), &"", &""),
             ],
             Utf8PathBuf::from("/fake/path"),
-            setup.build_meta(),
+            simple_build_meta(),
             &test_filter,
             None,
             EnvironmentMap::empty(),
@@ -2768,7 +2758,7 @@ mod tests {
                     IdOrdMap::new(),
                 ),
             ],
-            setup.build_meta(),
+            simple_build_meta(),
             &test_filter,
             None,
             Utf8PathBuf::from("/fake/path"),
@@ -2858,7 +2848,7 @@ mod tests {
                     known_test_case("tests::parallel", RustTestKind::TEST, false),
                 },
             )],
-            setup.build_meta(),
+            simple_build_meta(),
             &test_filter,
             None,
             Utf8PathBuf::from("/fake/path"),
@@ -2883,38 +2873,62 @@ mod tests {
     }
 
     /// The libtest arguments must stay last, so a suite's leading args go
-    /// between the binary path and them. Wrappers stay in front of everything.
+    /// between the binary path and them. Wrappers stay in front of everything,
+    /// and an empty invocation, which every Cargo suite has, adds nothing.
     #[test]
     fn invocation_leading_args_precede_libtest_args() {
-        let suite = RustTestSuite {
-            binary_id: RustBinaryId::new("fake-package::fake-binary"),
-            binary_path: "/fake/binary".into(),
-            package: package_info(),
-            binary_name: "fake-binary".to_owned(),
-            kind: RustTestBinaryKind::TEST,
-            cwd: "/fake/cwd".into(),
-            build_platform: BuildPlatform::Target,
-            non_test_binaries: BTreeSet::new(),
-            invocation: TestBinaryInvocation {
-                leading_args: vec!["--buck-arg".to_owned(), "value".to_owned()],
-                env: BTreeMap::new(),
-                cwd: None,
+        struct Case {
+            description: &'static str,
+            leading_args: &'static [&'static str],
+            ignored: bool,
+            extra_args: &'static [&'static str],
+            expected: &'static [&'static str],
+        }
+
+        let cases = [
+            Case {
+                description: "leading args come after the binary and before the libtest args",
+                leading_args: &["--buck-arg", "value"],
+                ignored: false,
+                extra_args: &[],
+                expected: &[
+                    "/fake/binary",
+                    "--buck-arg",
+                    "value",
+                    "--exact",
+                    "tests::foo",
+                    "--nocapture",
+                ],
             },
-            status: RustTestSuiteStatus::Listed {
-                test_cases: DebugIgnore(IdOrdMap::new()),
+            Case {
+                description: "run-extra-args stay last",
+                leading_args: &["--buck-arg", "value"],
+                ignored: false,
+                extra_args: &["--extra"],
+                expected: &[
+                    "/fake/binary",
+                    "--buck-arg",
+                    "value",
+                    "--exact",
+                    "tests::foo",
+                    "--nocapture",
+                    "--extra",
+                ],
             },
-        };
-        let test_info = RustTestCaseSummary {
-            kind: Some(RustTestKind::TEST),
-            ignored: false,
-            filter_match: FilterMatch::Matches,
-        };
-        let name = TestCaseName::new("tests::foo");
-        let instance = TestInstance {
-            name: &name,
-            suite_info: &suite,
-            test_info: &test_info,
-        };
+            Case {
+                description: "an empty invocation adds nothing",
+                leading_args: &[],
+                ignored: true,
+                extra_args: &[],
+                expected: &[
+                    "/fake/binary",
+                    "--exact",
+                    "tests::foo",
+                    "--nocapture",
+                    "--ignored",
+                ],
+            },
+        ];
 
         let test_list = TestList::empty();
         let version_env_vars = VersionEnvVars {
@@ -2929,90 +2943,50 @@ mod tests {
             double_spawn: &DoubleSpawnInfo::disabled(),
             target_runner: &TargetRunner::empty(),
         };
-
-        assert_eq!(
-            instance.command_line(&ctx, &test_list, None, &[]),
-            vec![
-                "/fake/binary",
-                "--buck-arg",
-                "value",
-                "--exact",
-                "tests::foo",
-                "--nocapture",
-            ],
-            "leading args come after the binary and before the libtest args"
-        );
-
-        // An extra arg from the profile still goes last.
-        assert_eq!(
-            instance.command_line(&ctx, &test_list, None, &["--extra".to_owned()]),
-            vec![
-                "/fake/binary",
-                "--buck-arg",
-                "value",
-                "--exact",
-                "tests::foo",
-                "--nocapture",
-                "--extra",
-            ],
-            "run-extra-args stay last"
-        );
-    }
-
-    /// Cargo suites have an empty invocation, which must not alter the command.
-    #[test]
-    fn empty_invocation_leaves_command_unchanged() {
-        let suite = RustTestSuite {
-            binary_id: RustBinaryId::new("fake-package::fake-binary"),
-            binary_path: "/fake/binary".into(),
-            package: package_info(),
-            binary_name: "fake-binary".to_owned(),
-            kind: RustTestBinaryKind::TEST,
-            cwd: "/fake/cwd".into(),
-            build_platform: BuildPlatform::Target,
-            non_test_binaries: BTreeSet::new(),
-            invocation: TestBinaryInvocation::empty(),
-            status: RustTestSuiteStatus::Listed {
-                test_cases: DebugIgnore(IdOrdMap::new()),
-            },
-        };
-        let test_info = RustTestCaseSummary {
-            kind: Some(RustTestKind::TEST),
-            ignored: true,
-            filter_match: FilterMatch::Matches,
-        };
         let name = TestCaseName::new("tests::foo");
-        let instance = TestInstance {
-            name: &name,
-            suite_info: &suite,
-            test_info: &test_info,
-        };
 
-        let test_list = TestList::empty();
-        let version_env_vars = VersionEnvVars {
-            current_version: semver::Version::new(0, 0, 0),
-            required_version: None,
-            recommended_version: None,
-        };
-        let ctx = TestExecuteContext {
-            run_id: ReportUuid::new_v4(),
-            version_env_vars: &version_env_vars,
-            profile_name: "default",
-            double_spawn: &DoubleSpawnInfo::disabled(),
-            target_runner: &TargetRunner::empty(),
-        };
+        for case in cases {
+            let suite = RustTestSuite {
+                binary_id: RustBinaryId::new("fake-package::fake-binary"),
+                binary_path: "/fake/binary".into(),
+                package: package_info(),
+                binary_name: "fake-binary".to_owned(),
+                kind: RustTestBinaryKind::TEST,
+                cwd: "/fake/cwd".into(),
+                build_platform: BuildPlatform::Target,
+                non_test_binaries: BTreeSet::new(),
+                invocation: TestBinaryInvocation {
+                    leading_args: case
+                        .leading_args
+                        .iter()
+                        .map(|&arg| arg.to_owned())
+                        .collect(),
+                    ..TestBinaryInvocation::empty()
+                },
+                status: RustTestSuiteStatus::Listed {
+                    test_cases: DebugIgnore(IdOrdMap::new()),
+                },
+            };
+            let test_info = RustTestCaseSummary {
+                kind: Some(RustTestKind::TEST),
+                ignored: case.ignored,
+                filter_match: FilterMatch::Matches,
+            };
+            let instance = TestInstance {
+                name: &name,
+                suite_info: &suite,
+                test_info: &test_info,
+            };
+            let extra_args: Vec<String> =
+                case.extra_args.iter().map(|&arg| arg.to_owned()).collect();
 
-        assert_eq!(
-            instance.command_line(&ctx, &test_list, None, &[]),
-            vec![
-                "/fake/binary",
-                "--exact",
-                "tests::foo",
-                "--nocapture",
-                "--ignored",
-            ],
-            "an empty invocation adds nothing"
-        );
+            assert_eq!(
+                instance.command_line(&ctx, &test_list, None, &extra_args),
+                case.expected,
+                "{}",
+                case.description
+            );
+        }
     }
 
     /// A build system that names the working directory wins over the manifest
@@ -3038,13 +3012,7 @@ mod tests {
             rust_build_meta: RustBuildMeta::new(
                 "/fake",
                 "/fake",
-                BuildPlatforms {
-                    host: HostPlatform {
-                        platform: TargetTriple::x86_64_unknown_linux_gnu().platform,
-                        libdir: PlatformLibdir::Available("/fake/libdir".into()),
-                    },
-                    target: None,
-                },
+                simple_build_meta().build_platforms,
             ),
             rust_binaries: vec![
                 binary("fake-package::explicit", Some("/explicit/cwd")),

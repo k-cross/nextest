@@ -434,18 +434,15 @@ impl<'g> ParseContext<'g> {
         self.graph
     }
 
-    pub(crate) fn make_cache(&self) -> &ParseContextCache<'g> {
-        self.cache.get_or_init(|| match self.graph {
-            Some(graph) => ParseContextCache::new(graph),
-            None => ParseContextCache::empty(),
-        })
+    pub(crate) fn make_cache(&self) -> Option<&ParseContextCache<'g>> {
+        let graph = self.graph?;
+        Some(self.cache.get_or_init(|| ParseContextCache::new(graph)))
     }
 }
 
 #[derive(Debug)]
 pub(crate) struct ParseContextCache<'g> {
-    /// Whether a package graph backed this cache.
-    pub(crate) has_graph: bool,
+    pub(crate) graph: &'g PackageGraph,
     pub(crate) workspace_packages: Vec<PackageMetadata<'g>>,
     // Ordinarily we'd store RustBinaryId here, but that wouldn't allow looking
     // up a string.
@@ -471,20 +468,10 @@ impl<'g> ParseContextCache<'g> {
             .unzip();
 
         Self {
-            has_graph: true,
+            graph,
             workspace_packages,
             binary_ids,
             binary_names,
-        }
-    }
-
-    // For when no package graph is available.
-    fn empty() -> Self {
-        Self {
-            has_graph: false,
-            workspace_packages: Vec::new(),
-            binary_ids: HashSet::new(),
-            binary_names: HashSet::new(),
         }
     }
 }

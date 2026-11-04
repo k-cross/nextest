@@ -26,7 +26,7 @@ use std::collections::BTreeSet;
 /// Information about the package a test binary belongs to.
 ///
 /// Cargo-based callers derive this from a package graph. Build systems without
-/// one construct it directly.
+/// one construct it with [`Self::new`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PackageInfo {
     /// This is the package ID from `cargo metadata`. It is used to
@@ -56,6 +56,23 @@ pub struct PackageInfo {
 }
 
 impl PackageInfo {
+    /// Creates a `PackageInfo` with none of the optional metadata set.
+    pub fn new(id: PackageId, name: String, version: Version, manifest_path: Utf8PathBuf) -> Self {
+        Self {
+            id,
+            name,
+            version,
+            authors: Vec::new(),
+            description: None,
+            homepage: None,
+            license: None,
+            license_file: None,
+            repository: None,
+            minimum_rust_version: None,
+            manifest_path,
+        }
+    }
+
     /// Creates a `PackageInfo` from Cargo package metadata.
     pub fn from_package_metadata(package: &PackageMetadata<'_>) -> Self {
         Self {
@@ -73,32 +90,34 @@ impl PackageInfo {
         }
     }
 
-    /// Builds a map of `PackageInfo` for every package in a Cargo package graph.
-    ///
-    /// This is the bridge Cargo-based callers use to satisfy
-    /// [`RustTestArtifact::from_binary_list`](crate::list::RustTestArtifact::from_binary_list).
-    pub fn map_from_graph(graph: &PackageGraph) -> IdOrdMap<Self> {
-        graph
-            .packages()
-            .map(|package| Self::from_package_metadata(&package))
-            .collect()
-    }
-
     /// Builds a map of `PackageInfo` for the packages a binary list refers to.
     ///
-    /// [`RustTestArtifact::from_binary_list`](crate::list::RustTestArtifact::from_binary_list)
-    /// only looks up the packages its binaries belong to, so this is what
-    /// Cargo-based callers want in preference to [`Self::map_from_graph`]:
-    /// a workspace's test binaries typically name a small fraction of the
-    /// packages in its graph.
+    /// This is the bridge Cargo-based callers use to satisfy
+    /// [`RustTestArtifact::from_binary_list`](crate::list::RustTestArtifact::from_binary_list),
+    /// which only looks up the packages its binaries belong to: a workspace's
+    /// test binaries typically name a small fraction of the packages in its
+    /// graph.
     ///
     /// A package ID that is not in the graph is left out, and reported by
     /// `from_binary_list` against the binary that named it.
     pub fn map_from_binary_list(graph: &PackageGraph, binary_list: &BinaryList) -> IdOrdMap<Self> {
-        binary_list
-            .rust_binaries
-            .iter()
-            .map(|binary| binary.package_id.as_str())
+        Self::map_from_package_ids(
+            graph,
+            binary_list
+                .rust_binaries
+                .iter()
+                .map(|binary| binary.package_id.as_str()),
+        )
+    }
+
+    /// Builds a map of `PackageInfo` for the given package IDs, leaving out
+    /// any that are not in the graph.
+    pub fn map_from_package_ids<'a>(
+        graph: &PackageGraph,
+        package_ids: impl IntoIterator<Item = &'a str>,
+    ) -> IdOrdMap<Self> {
+        package_ids
+            .into_iter()
             .collect::<BTreeSet<_>>()
             .into_iter()
             .filter_map(|id| graph.metadata(&PackageId::new(id)).ok())
@@ -183,26 +202,6 @@ mod tests {
                 info.manifest_path,
                 package.manifest_path(),
                 "manifest path matches"
-            );
-        }
-    }
-
-    /// `from_binary_list` looks packages up by ID, so the map must cover every
-    /// package a test binary could belong to, not just workspace members.
-    #[test]
-    fn map_from_graph_covers_every_package() {
-        let map = PackageInfo::map_from_graph(&PACKAGE_GRAPH_FIXTURE);
-
-        assert_eq!(
-            map.len(),
-            PACKAGE_GRAPH_FIXTURE.package_count(),
-            "map has an entry per package"
-        );
-        for package in PACKAGE_GRAPH_FIXTURE.packages() {
-            assert!(
-                map.get(package.id()).is_some(),
-                "package {} is present in the map",
-                package.id()
             );
         }
     }

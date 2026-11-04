@@ -33,13 +33,9 @@ pub enum SessionBuildError {
 /// An error building a test list from test cases the caller already knows.
 #[derive(Debug, Error)]
 pub enum KnownTestsBuildError {
-    /// Converting the binary list into test artifacts failed.
-    #[error(transparent)]
-    FromMessages(#[from] FromMessagesError),
-
     /// Building the test list failed.
     #[error(transparent)]
-    CreateTestList(#[from] CreateTestListError),
+    Session(#[from] SessionBuildError),
 
     /// The known test cases were not given for exactly the input binaries.
     #[error(
