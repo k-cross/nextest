@@ -401,37 +401,48 @@ impl KnownGroups {
 /// Inputs to filterset parsing.
 #[derive(Debug)]
 pub struct ParseContext<'g> {
-    /// The package graph.
-    graph: &'g PackageGraph,
+    /// The package graph, if one is available. Orchestrators for build systems
+    /// other than Cargo have no package graph.
+    graph: Option<&'g PackageGraph>,
 
     /// Cached data computed on first access.
     cache: OnceLock<ParseContextCache<'g>>,
 }
 
 impl<'g> ParseContext<'g> {
-    /// Creates a new `ParseContext`.
+    /// Creates a new `ParseContext` backed by a Cargo package graph.
     #[inline]
     pub fn new(graph: &'g PackageGraph) -> Self {
         Self {
-            graph,
+            graph: Some(graph),
             cache: OnceLock::new(),
         }
     }
 
-    /// Returns the package graph.
+    /// Creates a new `ParseContext` with no package graph.
     #[inline]
-    pub fn graph(&self) -> &'g PackageGraph {
+    pub fn without_graph() -> Self {
+        Self {
+            graph: None,
+            cache: OnceLock::new(),
+        }
+    }
+
+    /// Returns the package graph, if one is available.
+    #[inline]
+    pub fn graph(&self) -> Option<&'g PackageGraph> {
         self.graph
     }
 
-    pub(crate) fn make_cache(&self) -> &ParseContextCache<'g> {
-        self.cache
-            .get_or_init(|| ParseContextCache::new(self.graph))
+    pub(crate) fn make_cache(&self) -> Option<&ParseContextCache<'g>> {
+        let graph = self.graph?;
+        Some(self.cache.get_or_init(|| ParseContextCache::new(graph)))
     }
 }
 
 #[derive(Debug)]
 pub(crate) struct ParseContextCache<'g> {
+    pub(crate) graph: &'g PackageGraph,
     pub(crate) workspace_packages: Vec<PackageMetadata<'g>>,
     // Ordinarily we'd store RustBinaryId here, but that wouldn't allow looking
     // up a string.
@@ -457,6 +468,7 @@ impl<'g> ParseContextCache<'g> {
             .unzip();
 
         Self {
+            graph,
             workspace_packages,
             binary_ids,
             binary_names,

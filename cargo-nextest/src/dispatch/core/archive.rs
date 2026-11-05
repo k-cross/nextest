@@ -126,8 +126,9 @@ impl ArchiveApp {
         let binary_filter = BinaryFilter::new(filtersets);
         let ecx = profile.filterset_ecx();
 
+        let packages = self.base.packages(&binary_list);
         let (binary_list_to_archive, filter_counts) = apply_archive_filters(
-            self.base.graph(),
+            &packages,
             binary_list.clone(),
             &binary_filter,
             &ecx,

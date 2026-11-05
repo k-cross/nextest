@@ -9,7 +9,6 @@ use crate::{
     output::{OutputContext, StderrStyles},
 };
 use camino::{Utf8Path, Utf8PathBuf};
-use itertools::Itertools;
 use nextest_filtering::{Filterset, FiltersetKind, KnownGroups, ParseContext};
 use nextest_runner::{
     RustcCli,
@@ -167,16 +166,8 @@ pub(super) fn build_filtersets(
     kind: FiltersetKind,
     known_groups: &KnownGroups,
 ) -> Result<Vec<Filterset>> {
-    let (exprs, all_errors): (Vec<_>, Vec<_>) = filter_set
-        .iter()
-        .map(|input| Filterset::parse(input.clone(), pcx, kind, known_groups))
-        .partition_result();
-
-    if !all_errors.is_empty() {
-        Err(ExpectedError::filter_expression_parse_error(all_errors))
-    } else {
-        Ok(exprs)
-    }
+    nextest_session::parse_filtersets(pcx, filter_set, kind, known_groups)
+        .map_err(ExpectedError::filter_expression_parse_error)
 }
 
 pub(super) fn extract_slice_from_output<'a>(

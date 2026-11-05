@@ -32,9 +32,11 @@ pub(crate) fn compile(
         return Err(errors);
     }
 
-    let cx_cache = cx.make_cache();
-    let mut cache = cx.graph().new_depends_cache();
-    let expr = compile_expr(expr, cx_cache, known_groups, &mut cache, &mut errors);
+    let mut graph = cx.make_cache().map(|cx_cache| GraphCache {
+        cx_cache,
+        depends_cache: cx_cache.graph.new_depends_cache(),
+    });
+    let expr = compile_expr(expr, graph.as_mut(), known_groups, &mut errors);
 
     if errors.is_empty() {
         Ok(expr)
@@ -165,36 +167,92 @@ fn rdependencies_packages(
     set
 }
 
+/// What package and binary predicates resolve against, when a package graph is
+/// available.
+struct GraphCache<'a, 'g> {
+    cx_cache: &'a ParseContextCache<'g>,
+    depends_cache: DependsCache<'g>,
+}
+
+/// Reports that a package predicate cannot be resolved without a package graph.
+fn package_graph_unavailable(
+    span: SourceSpan,
+    errors: &mut Vec<ParseSingleError>,
+) -> FiltersetLeaf {
+    errors.push(ParseSingleError::PackageGraphUnavailable(span));
+    FiltersetLeaf::Packages(HashSet::new())
+}
+
 fn compile_set_def(
     set: &ParsedLeaf,
-    cx_cache: &ParseContextCache<'_>,
+    graph: Option<&mut GraphCache<'_, '_>>,
     known_groups: &KnownGroups,
-    cache: &mut DependsCache<'_>,
     errors: &mut Vec<ParseSingleError>,
 ) -> FiltersetLeaf {
     match set {
-        ParsedLeaf::Package(matcher, span) => FiltersetLeaf::Packages(expect_non_empty_packages(
-            matching_packages(matcher, &cx_cache.workspace_packages),
-            *span,
-            errors,
-        )),
-        ParsedLeaf::Deps(matcher, span) => FiltersetLeaf::Packages(expect_non_empty_packages(
-            dependencies_packages(matcher, &cx_cache.workspace_packages, cache),
-            *span,
-            errors,
-        )),
-        ParsedLeaf::Rdeps(matcher, span) => FiltersetLeaf::Packages(expect_non_empty_packages(
-            rdependencies_packages(matcher, &cx_cache.workspace_packages, cache),
-            *span,
-            errors,
-        )),
+        // `package()`, `deps()`, and `rdeps()` resolve against Cargo package
+        // metadata. Without a package graph there is nothing to resolve them
+        // to, so report that rather than silently matching no packages.
+        ParsedLeaf::Package(matcher, span) => {
+            let Some(graph) = graph else {
+                return package_graph_unavailable(*span, errors);
+            };
+            FiltersetLeaf::Packages(expect_non_empty_packages(
+                matching_packages(matcher, &graph.cx_cache.workspace_packages),
+                *span,
+                errors,
+            ))
+        }
+        ParsedLeaf::Deps(matcher, span) => {
+            let Some(graph) = graph else {
+                return package_graph_unavailable(*span, errors);
+            };
+            FiltersetLeaf::Packages(expect_non_empty_packages(
+                dependencies_packages(
+                    matcher,
+                    &graph.cx_cache.workspace_packages,
+                    &mut graph.depends_cache,
+                ),
+                *span,
+                errors,
+            ))
+        }
+        ParsedLeaf::Rdeps(matcher, span) => {
+            let Some(graph) = graph else {
+                return package_graph_unavailable(*span, errors);
+            };
+            FiltersetLeaf::Packages(expect_non_empty_packages(
+                rdependencies_packages(
+                    matcher,
+                    &graph.cx_cache.workspace_packages,
+                    &mut graph.depends_cache,
+                ),
+                *span,
+                errors,
+            ))
+        }
         ParsedLeaf::Kind(matcher, span) => FiltersetLeaf::Kind(matcher.clone(), *span),
+        // Without a graph no binary names are known, so skip the "didn't
+        // match" check rather than rejecting every name.
         ParsedLeaf::Binary(matcher, span) => FiltersetLeaf::Binary(
-            expect_non_empty_binary_names(matcher, &cx_cache.binary_names, *span, errors),
+            match graph {
+                Some(graph) => expect_non_empty_binary_names(
+                    matcher,
+                    &graph.cx_cache.binary_names,
+                    *span,
+                    errors,
+                ),
+                None => matcher.clone(),
+            },
             *span,
         ),
         ParsedLeaf::BinaryId(matcher, span) => FiltersetLeaf::BinaryId(
-            expect_non_empty_binary_ids(matcher, &cx_cache.binary_ids, *span, errors),
+            match graph {
+                Some(graph) => {
+                    expect_non_empty_binary_ids(matcher, &graph.cx_cache.binary_ids, *span, errors)
+                }
+                None => matcher.clone(),
+            },
             *span,
         ),
         ParsedLeaf::Platform(platform, span) => FiltersetLeaf::Platform(*platform, *span),
@@ -278,15 +336,19 @@ fn expect_known_group(
 
 fn compile_expr(
     expr: &ParsedExpr,
-    cx_cache: &ParseContextCache<'_>,
+    mut graph: Option<&mut GraphCache<'_, '_>>,
     known_groups: &KnownGroups,
-    cache: &mut DependsCache<'_>,
     errors: &mut Vec<ParseSingleError>,
 ) -> CompiledExpr {
     use crate::expression::ExprFrame::*;
 
     Wrapped(expr).collapse_frames(|layer: ExprFrame<&ParsedLeaf, CompiledExpr>| match layer {
-        Set(set) => CompiledExpr::Set(compile_set_def(set, cx_cache, known_groups, cache, errors)),
+        Set(set) => CompiledExpr::Set(compile_set_def(
+            set,
+            graph.as_deref_mut(),
+            known_groups,
+            errors,
+        )),
         Not(expr) => CompiledExpr::Not(Box::new(expr)),
         Union(expr_1, expr_2) => CompiledExpr::Union(Box::new(expr_1), Box::new(expr_2)),
         Intersection(expr_1, expr_2) => {

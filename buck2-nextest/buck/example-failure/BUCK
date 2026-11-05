@@ -1,0 +1,13 @@
+# Copyright (c) The nextest Contributors
+# SPDX-License-Identifier: MIT OR Apache-2.0
+
+load("@nextest//:nextest_test.bzl", "nextest_test")
+
+# Kept out of //example/..., so this target's failure never turns that package's all-passing run
+# red. `buck2_example.rs` runs it on its own, to check what Buck2 reports for a real failure.
+nextest_test(
+    name = "demo-failing-test",
+    srcs = ["src/lib.rs"],
+    crate_root = "src/lib.rs",
+    edition = "2024",
+)

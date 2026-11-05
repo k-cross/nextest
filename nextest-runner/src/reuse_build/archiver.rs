@@ -9,7 +9,7 @@ use crate::{
     },
     errors::{ArchiveCreateError, FromMessagesError, UnknownArchiveFormat, WriteTestListError},
     helpers::{convert_rel_path_to_forward_slash, rel_path_join},
-    list::{BinaryList, RustBuildMeta, RustTestArtifact},
+    list::{BinaryList, PackageInfo, RustBuildMeta, RustTestArtifact},
     redact::Redactor,
     reuse_build::{ArchiveFilterCounts, LIBDIRS_BASE_DIR, PathMapper},
     test_filter::{BinaryFilter, FilterBinaryMatch, FilterBound},
@@ -18,6 +18,7 @@ use atomicwrites::{AtomicFile, OverwriteBehavior};
 use camino::{Utf8Path, Utf8PathBuf};
 use core::fmt;
 use guppy::{PackageId, graph::PackageGraph};
+use iddqd::IdOrdMap;
 use nextest_filtering::EvalContext;
 use std::{
     collections::{BTreeSet, HashSet},
@@ -31,7 +32,7 @@ use zstd::Encoder;
 
 /// Applies archive filters to a [`BinaryList`].
 pub fn apply_archive_filters(
-    graph: &PackageGraph,
+    packages: &IdOrdMap<PackageInfo>,
     binary_list: Arc<BinaryList>,
     filter: &BinaryFilter,
     ecx: &EvalContext<'_>,
@@ -39,7 +40,7 @@ pub fn apply_archive_filters(
 ) -> Result<(BinaryList, ArchiveFilterCounts), FromMessagesError> {
     let rust_build_meta = binary_list.rust_build_meta.map_paths(path_mapper);
     let test_artifacts = RustTestArtifact::from_binary_list(
-        graph,
+        packages,
         binary_list.clone(),
         &rust_build_meta,
         path_mapper,
